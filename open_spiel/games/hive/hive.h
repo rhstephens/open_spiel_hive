@@ -22,8 +22,9 @@
 #include <string>
 #include <vector>
 
-#include "open_spiel/spiel.h"
+#include "open_spiel/abseil-cpp/absl/container/flat_hash_set.h"
 #include "open_spiel/games/hive/hive_hexboard.h"
+#include "open_spiel/spiel.h"
 
 // https://en.wikipedia.org/wiki/Hive_(game)
 //
@@ -36,27 +37,29 @@ namespace open_spiel {
 namespace hive {
 
 inline constexpr int kNumPlayers = 2;
+inline constexpr Player kPlayerWhite = 0;
+inline constexpr Player kPlayerBlack = 1;
 inline constexpr int kDefaultBoardRadius = 8; // Assumes a regular Hexagonal layout
-inline constexpr int kNumNeighbours = 6;
-inline constexpr int kNumStackableTiles = 7; // number of beetles/mosquitos
+inline constexpr int kNumStackableTiles = 6; // number of beetles/mosquitos
+inline constexpr int kNumNeighbours = 6; // ???????????????????????????????
 
 
 //typedef std::array<int, 2> Direction__;
 //struct Direction { int8_t q_offset{}; int8_t r_offset{}; int8_t h_offset{}; };
 
 
-// special tile under (0,0) to enforce the first tile location at the origin
-const HiveTile kStartTile = { 
-  kOriginPosition, BugType::kNone, kInvalidPlayer
-};
-
 // Encodes a move as defined by the Universal Hive Protocol
 // {INSERT LINK} //////
 struct Move {
-  HiveTile from;    // the tile that's being moved
-  HiveTile to;      // the tile that's used as a reference point for the move
-  HivePosition offset;
+  Player player;                    // whose turn was it during this move
+  std::shared_ptr<HiveTile> from;   // the tile that's being moved
+  std::shared_ptr<HiveTile> to;     // the reference tile
+  Direction direction;
+  bool is_pass = false;
 
+  std::string ToUHP();
+  HivePosition StartPosition() { return from->GetPosition(); }
+  HivePosition EndPosition() { return to->GetPosition() + kNeighbourOffsets[direction]; }
 };
 
 
@@ -65,20 +68,47 @@ struct Move {
 
 // State of an in-play game.
 class HiveState : public State {
-
  public:
-  HiveState(std::shared_ptr<const Game> game, int board_size,
-                bool ansi_color_output = false, bool allow_swap = false);
+
+  // returns the total amount of tiles each player starts with per BugType
+  // (may need to modify if allowing less expansions than the full game...)
+  static constexpr uint8_t BugTypeCount(BugType type) {
+    switch (type) {
+      case BugType::kQueen:
+        return 1;
+      case BugType::kAnt:
+        return 3;
+      case BugType::kGrasshopper:
+        return 3;
+      case BugType::kSpider:
+        return 2;
+      case BugType::kBeetle:
+        return 2;
+      case BugType::kLadybug:
+        return 1;
+      case BugType::kMosquito:
+        return 1;
+      case BugType::kPillbug:
+        return 1;
+      default:
+        return 0;
+    }
+  };
+
+  HiveState(std::shared_ptr<const Game> game, int board_size = kDefaultBoardRadius);
 
   HiveState(const HiveState&) = default;
 
-  Player CurrentPlayer() const override {
-    return IsTerminal() ? kTerminalPlayerId : kInvalidPlayer;
+
+  // overrides
+
+  inline Player CurrentPlayer() const override {
+    return IsTerminal() ? kTerminalPlayerId : current_player_;
   }
   std::string ActionToString(Player player, Action action_id) const override;
   std::string ToString() const override;
   bool IsTerminal() const override {
-    return IsQueenSurrounded(kInvalidPlayer) || IsQueenSurrounded(kInvalidPlayer); 
+    return IsQueenSurrounded(kPlayerWhite) || IsQueenSurrounded(kPlayerBlack); 
   }
   std::vector<double> Returns() const override;
   std::string InformationStateString(Player player) const override;
@@ -91,17 +121,24 @@ class HiveState : public State {
   std::unique_ptr<State> Clone() const override;
   std::vector<Action> LegalActions() const override;
 
- protected:
-  void DoApplyAction(Action action) override;
+  // custom
+  static inline Move PassMove() { return {{},{},{},{}, true}; }
+
+  Move ActionToMove(Action action) const;
+  Action MoveToAction(Move& move) const;
 
   bool IsQueenSurrounded(const Player& player) const;
 
+
+ protected:
+  void DoApplyAction(Action action) override;
+
  private:
+
   inline void BugPlayed(BugType type) { ++type_played_counts_.at(type); }
-  
-  std::vector<HiveTile> board_;
-  std::vector<HiveTile> hive_;
-  std::array<HiveTile, kNumStackableTiles> stack_;
+
+  Player current_player_ = kPlayerWhite;
+  std::unique_ptr<HexBoard> board_;
   std::unordered_map<BugType,uint8_t> type_played_counts_ = {
     {BugType::kQueen,       0},
     {BugType::kAnt,         0},
@@ -112,7 +149,43 @@ class HiveState : public State {
     {BugType::kLadybug,     0},
     {BugType::kPillbug,     0}
   };
-  /*
+};
+
+
+// Game object.
+class HiveGame : public Game {
+ public:
+  explicit HiveGame(const GameParameters& params);
+
+  
+  std::array<int,3> ActionsShape() const { return {7,28,28}; }
+  int NumDistinctActions() const override { return 5488 + 1; } // +1 for pass
+  inline std::unique_ptr<State> NewInitialState() const override {
+    return std::unique_ptr<State>(
+        new HiveState(shared_from_this(), 8));
+  }
+  int NumPlayers() const override { return kNumPlayers; }
+  double MinUtility() const override { return -1; }
+  absl::optional<double> UtilitySum() const override { return 0; }
+  double MaxUtility() const override { return 1; }
+  std::vector<int> ObservationTensorShape() const override {
+    return { 16 /*num bug types x num_players */ + 1 /* negative space plane */ + 1 /* articulation points */,
+    2*kBoardRadius + 1, /*dimensions of a sq board from hex board is: (2*radius + 1)*/
+    2*kBoardRadius + 1};
+  }
+  int MaxGameLength() const override { return 250; }
+
+ private:
+  const int kBoardRadius;
+};
+
+
+}  // namespace hive
+}  // namespace open_spiel
+
+
+
+/*
   // Represents a single cell on the board, as well as the structures needed for
   // groups of cells. Groups of cells are defined by a union-find structure
   // embedded in the array of cells. Following the `parent` indices will lead to
@@ -212,54 +285,10 @@ class HiveState : public State {
   const bool ansi_color_output_;
   const bool allow_swap_;
   */
-};
 
-// Game object.
-class HiveGame : public Game {
- public:
-  explicit HiveGame(const GameParameters& params);
 
-  
-  int NumDistinctActions() const override {
-    // Really diameter^2 - size*(size-1), but that's harder to represent, so
-    // the extra actions in the corners are never legal.
-    return 0;
-  }
-  inline std::unique_ptr<State> NewInitialState() const override {
-    return std::unique_ptr<State>(
-        new HiveState(shared_from_this(), 8));
-  }
-  int NumPlayers() const override { return kNumPlayers; }
-  double MinUtility() const override { return -1; }
-  absl::optional<double> UtilitySum() const override { return 0; }
-  double MaxUtility() const override { return 1; }
-  std::vector<int> ObservationTensorShape() const override {
-    return {0, 0, 0};
-  }
-  int MaxGameLength() const override { return 200; }
 
-  // returns the total amount of tiles each player starts with per BugType
-  // (may need to modify if allowing less expansions than the full game...)
-  constexpr uint8_t BugTypeCount(BugType type) {
-    switch (type) {
-      case BugType::kQueen:
-        return 1;
-      case BugType::kAnt:
-        return 3;
-      case BugType::kGrasshopper:
-        return 3;
-      case BugType::kSpider:
-        return 2;
-      case BugType::kBeetle:
-        return 2;
-      case BugType::kLadybug:
-        return 1;
-      case BugType::kMosquito:
-        return 1;
-      case BugType::kPillbug:
-        return 1;
-    }
-  };
+
 
 
   /*
@@ -294,9 +323,5 @@ class HiveGame : public Game {
   const bool ansi_color_output_ = false;
   const bool allow_swap_ = false;
   */
-};
-
-}  // namespace hive
-}  // namespace open_spiel
 
 #endif  // OPEN_SPIEL_GAMES_HIVE_H_
