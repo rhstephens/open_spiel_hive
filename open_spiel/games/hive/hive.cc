@@ -15,6 +15,7 @@
 #include "open_spiel/games/hive/hive.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -65,7 +66,9 @@ RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 
 HiveState::HiveState(std::shared_ptr<const Game> game, int board_size) :
   State(game), board_(new HexBoard(game, board_size, kNumStackableTiles)) {
-    
+
+  std::cout << "Initializing HiveState" << std::endl;
+  
   // create a tile for each player + bug type + ordinal
   for (Player p = 0; p < kNumPlayers; ++p) {
     for (int ord = 1; ord <= BugTypeCount(BugType::kQueen); ++ord) {
@@ -100,6 +103,7 @@ HiveState::HiveState(std::shared_ptr<const Game> game, int board_size) :
       board_->CreateTile(p, BugType::kPillbug, ord);
     }
   }
+  std::cout << "HiveState Finished with all tiles" << std::endl;
 }
 
 int PlayerRelative(Player current_player);
@@ -110,8 +114,14 @@ int PlayerRelative(Player current_player);
 
 // UHP string representation of a move (there is exactly 1 move per player turn)
 std::string Move::ToUHP() {
+  // special case: pass for when a player has no possible legal moves 
   if (is_pass) {
     return "pass";
+  }
+
+  // special case: for the first turn, there is no reference tile
+  if (to == nullptr) {
+    return from->ToUHP();
   }
 
   std::string reference_tile_uhp = to->ToUHP();
@@ -121,18 +131,25 @@ std::string Move::ToUHP() {
   switch(direction) {
     case Direction::kNE:
       offset_formatted = reference_tile_uhp + "/";
+      break;
     case Direction::kE:
       offset_formatted = reference_tile_uhp + "-";
+      break;
     case Direction::kSE:
       offset_formatted = reference_tile_uhp + "\\";
+      break;
     case Direction::kSW:
       offset_formatted = "/" + reference_tile_uhp;
+      break;
     case Direction::kW:
       offset_formatted = "-" + reference_tile_uhp;
+      break;
     case Direction::kNW:
       offset_formatted = "\\" + reference_tile_uhp;
+      break;
     case Direction::kAbove:
       offset_formatted = reference_tile_uhp;
+      break;
     default:
       SpielFatalError("Move::ToUHP() - Move has an invalid direction!");
   }
@@ -146,7 +163,8 @@ std::string Move::ToUHP() {
 HiveGame::HiveGame(const GameParameters& params)
   : Game(kGameType, params),
     kBoardRadius(kDefaultBoardRadius) {
-
+  std::cout << "Initializing HiveGame" << std::endl;
+  
 }
 
 
@@ -154,12 +172,184 @@ HiveGame::HiveGame(const GameParameters& params)
 
 
 std::string HiveState::ActionToString(Player player, Action action_id) const {
-  return std::to_string(action_id);
+  return ActionToMove(action_id).ToUHP();
 }
 
 std::string HiveState::ToString() const {
-  return "Base+LMP";
+  static int n = board_->Radius();
+  static float indent_size = 2.5f;
+
+  std::string string;
+  // *5 for the number of chars at each grid index
+  string.reserve((n * 2 + 1) * (n * 2 + 1) * 5);
+
+  // loop over Q, R, to generate a hexagon
+  for (int r = -n; r <= n; ++r) {
+    // indent based on which row we are on (r). Intentionally use float
+    // to take the floor for odd numbered rows
+    int num_spaces = std::abs(r) * indent_size;
+    for (int i = 0; i < num_spaces; ++i) {
+      absl::StrAppend(&string, " ");
+    }
+
+    // print each tile on row r by iterating valid q indices
+    for (int q = std::max(-n, -r - n); q <= std::min(n, -r + n); ++q) {
+      
+      absl::optional<HiveTilePtr> tile = board_->GetTileAt(HivePosition(q, r));
+
+      // print the tile's UHP representation, or "-" otherwise, centered around
+      // a padded 5 char long string
+      //std::cout << tile.has_value() << std::endl;
+      std::ostringstream oss;
+      oss << std::left << std::setw(3);
+      if (tile.has_value()) {
+        oss << (*tile)->ToUHP();
+      } else {
+        oss << " - ";
+      }
+      absl::StrAppendFormat(&string, " %s ", oss.str());
+    }
+    absl::StrAppend(&string, "\n\n");
+  }
+
+  return string;
+
 }
+
+// e.g. the string "wA2 /bQ" translates to: "Move White's 2nd Ant to the
+// south-west of Black's Queen"
+Action HiveState::StringToAction(Player player,
+                        const std::string& move_str) const {
+
+  // pass move?
+  if (move_str == "pass") {
+    return NumDistinctActions() - 1;
+  }
+  
+  std::vector<std::string> bugs = absl::StrSplit(move_str, " ");
+  SPIEL_CHECK_GT(bugs.size(), 0);
+  SPIEL_CHECK_LE(bugs.size(), 2);
+
+  Move move;
+  move.player = player;
+
+  // first bug should always be valid
+  absl::optional<HiveTilePtr> bug1 = board_->GetTileFromUHP(bugs[0]);
+  if (bug1.has_value()) {
+    move.from = bug1.value();
+  } else {
+    SpielFatalError("HiveState::StringToAction() - invalid move string: "
+                    + move_str);
+  }
+
+  // special case: if only first bug is provided, it is a valid 1st turn move
+  if (bugs.size() == 1) {
+    return MoveToAction(move);
+  }
+
+  // get second bug and its relative direction
+  auto it = bugs[1].begin();
+  bool is_prefix_direction = true;
+  Direction direction = Direction::kNumDirections;
+  BugType type = BugType::kNone;
+  int ordinal = 0;
+
+  // check first char for a direction
+  char c = bugs[1].front();
+  if (c == '\\') {
+    direction = Direction::kNW;
+  } else if (c == '-') {
+    direction = Direction::kW;
+  } else if (c == '/') {
+    direction = Direction::kSW;
+  }
+
+  // check last char if we haven't found a direction
+  if (direction == kNumDirections) {
+    c = bugs[1].back();
+    if (c == '\\') {
+      direction = Direction::kSE;
+    } else if (c == '-') {
+      direction = Direction::kE;
+    } else if (c == '/') {
+      direction = Direction::kNE;
+    }
+  }
+
+  // if still no direction, it must be above
+  if (direction == kNumDirections) {
+    direction = Direction::kAbove;
+  }
+
+  move.direction = direction;
+  
+  // now get bug + ord from string
+  int ord_index = bugs[1].find_first_of("123");
+  size_t start_index = bugs[1].find_first_not_of("\\-/");
+  size_t end_index = bugs[1].find_last_not_of("\\-/");
+
+  if (ord_index != std::string::npos) {
+    ordinal = bugs[1].at(ord_index) - '0';
+  }
+
+  auto tile = board_->GetTileFromUHP(bugs[1].substr(start_index, end_index - start_index + 1));
+  if (tile.has_value()) {
+    move.to = tile.value();
+  } else {
+    SpielFatalError("HiveState::StringToAction() - invalid UHP string: "
+                    + bugs[1].substr(start_index, end_index - start_index + 1));
+  }
+
+  return MoveToAction(move);
+
+  // while (it != bugs[1].end()) {
+  //   char c = *it;
+
+  //   // direction is based on whether \-/ comes before or after the bug type
+  //   if (c == '\\') {
+  //     direction = is_prefix_direction ? Direction::kNW : Direction::kSE;
+  //   } else if (c == '-') {
+  //     direction = is_prefix_direction ? Direction::kW : Direction::kE;
+  //   } else if (c == '/') {
+  //     direction = is_prefix_direction ? Direction::kSW : Direction::kNE;
+  //   // determine Player
+  //   } else if (c == 'w') {
+  //     is_prefix_direction = false;
+  //     player = kPlayerWhite;
+  //   } else if (c == 'b') {
+  //     is_prefix_direction = false;
+  //     player = kPlayerBlack;
+  //   // if its a space, skip, otherwise it must be bug type + ordinal
+  //   } else if (c != ' ') {
+  //     type = kUHPToBugType.at(c);
+  //     if (++it != bugs[1].end()) {
+  //       c = *it;
+  //       if (std::isdigit(c)) {
+  //         ordinal = c - '0';
+  //       }
+  //     }
+  //   }
+    
+  //   ++it;
+
+  //   if (direction) {
+
+  //   }
+  // }
+}
+
+
+// e.g. the string "wA2" would return white's 2nd Ant tile
+// HiveTilePtr& HiveState::StringToTile(const std::string& str) const {
+//   Player player;
+//   BugType type;
+
+
+//   absl::string_view bug = absl::StripAsciiWhitespace(str);
+//   absl::optional<HiveTilePtr> x = board_->GetTileFromUHP(str);
+//   return x.value();
+// }
+
 
 
 std::vector<double> HiveState::Returns() const {
@@ -173,7 +363,9 @@ std::string HiveState::InformationStateString(Player player) const {
 }
 
 std::string HiveState::ObservationString(Player player) const {
-  return "?";
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+  return ToString();
 }
 
 
@@ -190,26 +382,42 @@ std::unique_ptr<State> HiveState::Clone() const {
 
 std::vector<Action> HiveState::LegalActions() const {
   // TODO: change from all actions
-  return std::vector<Action>(NumDistinctActions());
+  std::vector<Action> actions(NumDistinctActions());
+  for (int i = 0; i < NumDistinctActions(); ++i) {
+    actions[i] = i;
+  }
+  return actions;
 }
 
 Move HiveState::ActionToMove(Action action) const {
   // pass action
   if (action == NumDistinctActions() - 1) {
-    return PassMove();
+    Move m;
+    m.player = current_player_;
+    m.is_pass = true;
+    return std::move(m);
   }
 
   int num_tiles = board_->NumUniqueTiles();
 
   int direction = action % kNumDirections;
   int to = (action / kNumDirections) % num_tiles;
-  int from = action / (num_tiles * num_tiles);
+  int from = action / (num_tiles * kNumDirections);
+
+  // special case: for the first turn actions, they are encoded as playing a
+  // tile on top of itself. In this case, we want "to" to be null
+  HiveTilePtr to_tile;
+  if (from == to && direction == kAbove) {
+    to_tile = nullptr;
+  } else {
+    to_tile = board_->DecodeTile(to, current_player_);
+  }
 
   return Move{current_player_,
-              board_->DecodeTile(from, current_player_),
-              board_->DecodeTile(to, current_player_),
+              /*from*/ board_->DecodeTile(from, current_player_),
+              /*to*/ to_tile,
               static_cast<Direction>(direction),
-              false};
+              /*is_pass*/ false};
 }
 
 Action HiveState::MoveToAction(Move& move) const {
@@ -221,11 +429,16 @@ Action HiveState::MoveToAction(Move& move) const {
 
   // using tiles encoded from the current player's perspective,
   int from = board_->EncodeTile(move.from, move.player);
+
+  // if there is no second bug "to", then we have a special case for first turn
+  if (!move.to) {
+    return (from * (num_tiles * kNumDirections)) + (kNumDirections * from) + Direction::kAbove;
+  }
+
   int to = board_->EncodeTile(move.to, move.player);
 
-
   // as if indexing into a 3d array with indices [from][to][direction]
-  return (from * (num_tiles * num_tiles)) + (kNumDirections * to) + move.direction;
+  return (from * (num_tiles * kNumDirections)) + (kNumDirections * to) + move.direction;
 }
 
 

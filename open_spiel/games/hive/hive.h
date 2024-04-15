@@ -37,8 +37,6 @@ namespace open_spiel {
 namespace hive {
 
 inline constexpr int kNumPlayers = 2;
-inline constexpr Player kPlayerWhite = 0;
-inline constexpr Player kPlayerBlack = 1;
 inline constexpr int kDefaultBoardRadius = 8; // Assumes a regular Hexagonal layout
 inline constexpr int kNumStackableTiles = 6; // number of beetles/mosquitos
 inline constexpr int kNumNeighbours = 6; // ???????????????????????????????
@@ -71,7 +69,7 @@ class HiveState : public State {
  public:
 
   // returns the total amount of tiles each player starts with per BugType
-  // (may need to modify if allowing less expansions than the full game...)
+  // (may need to modify if allowing less expansions than the full game...?)
   static constexpr uint8_t BugTypeCount(BugType type) {
     switch (type) {
       case BugType::kQueen:
@@ -107,6 +105,8 @@ class HiveState : public State {
   }
   std::string ActionToString(Player player, Action action_id) const override;
   std::string ToString() const override;
+  Action StringToAction(Player player,
+                        const std::string& move_str) const override;
   bool IsTerminal() const override {
     return IsQueenSurrounded(kPlayerWhite) || IsQueenSurrounded(kPlayerBlack); 
   }
@@ -122,10 +122,9 @@ class HiveState : public State {
   std::vector<Action> LegalActions() const override;
 
   // custom
-  static inline Move PassMove() { return {{},{},{},{}, true}; }
-
   Move ActionToMove(Action action) const;
   Action MoveToAction(Move& move) const;
+  //HiveTilePtr& StringToTile(const std::string& str) const;
 
   bool IsQueenSurrounded(const Player& player) const;
 
@@ -161,6 +160,7 @@ class HiveGame : public Game {
   std::array<int,3> ActionsShape() const { return {7,28,28}; }
   int NumDistinctActions() const override { return 5488 + 1; } // +1 for pass
   inline std::unique_ptr<State> NewInitialState() const override {
+    std::cout << "check3" << std::endl;
     return std::unique_ptr<State>(
         new HiveState(shared_from_this(), 8));
   }

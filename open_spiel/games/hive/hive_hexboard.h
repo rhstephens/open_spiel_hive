@@ -32,6 +32,9 @@ namespace open_spiel {
 namespace hive {
 
 
+inline constexpr Player kPlayerWhite = 0;
+inline constexpr Player kPlayerBlack = 1;
+
 enum class BugType : int8_t {
   kNone = -1,
   kQueen = 0,
@@ -115,16 +118,16 @@ const std::array<HiveOffset,kNumDirections> kNeighbourOffsets = {
 };
 
 // official names for each bug tile in the Universal Hive Protocol
-// /////////////// Proabbly not needed?? .//////////////////
-const std::unordered_map<BugType, const char*> kBugTypeToUHP = {
-  {BugType::kQueen,       "Q"},
-  {BugType::kAnt,         "A"},
-  {BugType::kGrasshopper, "G"},
-  {BugType::kSpider,      "S"},
-  {BugType::kBeetle,      "B"},
-  {BugType::kMosquito,    "M"},
-  {BugType::kLadybug,     "L"},
-  {BugType::kPillbug,     "P"}
+// TODO: Change to constexpr switch function instead of map
+const std::unordered_map<char, BugType> kUHPToBugType = {
+  {'Q', BugType::kQueen}, {'q', BugType::kQueen},
+  {'A', BugType::kAnt}, {'a', BugType::kAnt},
+  {'G', BugType::kGrasshopper}, {'g', BugType::kGrasshopper},
+  {'S', BugType::kSpider}, {'s', BugType::kSpider},
+  {'B', BugType::kBeetle}, {'b', BugType::kBeetle},
+  {'M', BugType::kMosquito}, {'m', BugType::kMosquito},
+  {'L', BugType::kLadybug}, {'l', BugType::kLadybug},
+  {'P', BugType::kPillbug}, {'p', BugType::kPillbug}
 };
 
 
@@ -207,8 +210,8 @@ class HexBoard {
 
   void CreateTile(const Player player, const BugType type, const int ordinal);
 
-  HiveTile& GetTileAt(const HivePosition& pos) const;
-  HiveTile& GetTileFromUHP(const std::string& uhp) const;
+  absl::optional<HiveTilePtr> GetTileAt(const HivePosition& pos) const;
+  absl::optional<HiveTilePtr> GetTileFromUHP(const std::string& uhp) const;
 
   void GetNeighbourTilePositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
   void GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
@@ -217,6 +220,8 @@ class HexBoard {
 
   int EncodeTile(HiveTilePtr& tile, const Player player) const;
   HiveTilePtr& DecodeTile(int encoding, const Player player);
+
+  int Radius() const { return board_radius_; }
 
   
  private:

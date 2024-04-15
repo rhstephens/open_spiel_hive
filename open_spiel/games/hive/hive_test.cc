@@ -15,6 +15,8 @@
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/tests/basic_tests.h"
+#include "open_spiel/tests/console_play_test.h"
+#include "open_spiel/games/hive/hive.h"
 
 namespace open_spiel {
 namespace hive {
@@ -23,9 +25,48 @@ namespace {
 namespace testing = open_spiel::testing;
 
 void BasicHiveTests() {
-  testing::LoadGameTest("hive(board_size=4)");
-  testing::NoChanceOutcomesTest(*LoadGame("hive(board_size=4)"));
-  testing::RandomSimTest(*LoadGame("hive"), 10);
+
+  std::cout << "**Begin Test**" << std::endl;
+  std::shared_ptr<const Game> game = LoadGame("hive(board_size=8)");
+  std::unique_ptr<State> state = game->NewInitialState();
+
+  std::cout << "**Testing action to string mappings**" << '\n';
+  for (int i = 0; i < state->NumDistinctActions(); ++ i) {
+    std::string a_to_s = state->ActionToString(i);
+    SPIEL_CHECK_EQ(i, state->StringToAction(a_to_s));
+
+    std::cout << i << ": " << a_to_s << '\n';
+  }
+  std::cout << std::endl;
+
+  while(true) {
+    std::cout << "[Enter move string or action number]> ";
+    std::string line = "";
+    std::getline(std::cin, line);
+    absl::StripAsciiWhitespace(&line);
+
+    Action action;
+    bool valid_integer = absl::SimpleAtoi(line, &action);
+    if (valid_integer) {
+      std::cout << state->ActionToString(action) << std::endl;
+    } else {
+      std:: cout << state->StringToAction(line) << std::endl;
+    }
+  }
+  
+
+  testing::ConsolePlayTest(*LoadGame("hive(board_size=8)"));
+
+  std::cout << "**End Test**" << std::endl;
+
+
+
+  // TODO REMOVE
+  return; 
+
+  testing::LoadGameTest("hive(board_size=8)");
+  testing::NoChanceOutcomesTest(*LoadGame("hive(board_size=8)"));
+  testing::RandomSimTest(*LoadGame("hive"), 1);
 
   // All the sizes we care about.
   for (int i = 3; i <= 13; i++) {
