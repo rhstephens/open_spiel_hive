@@ -46,21 +46,6 @@ inline constexpr int kNumNeighbours = 6; // ???????????????????????????????
 //struct Direction { int8_t q_offset{}; int8_t r_offset{}; int8_t h_offset{}; };
 
 
-// Encodes a move as defined by the Universal Hive Protocol
-// {INSERT LINK} //////
-struct Move {
-  Player player;                    // whose turn was it during this move
-  std::shared_ptr<HiveTile> from;   // the tile that's being moved
-  std::shared_ptr<HiveTile> to;     // the reference tile
-  Direction direction;
-  bool is_pass = false;
-
-  std::string ToUHP();
-  HivePosition StartPosition() { return from->GetPosition(); }
-  HivePosition EndPosition() { return to->GetPosition() + kNeighbourOffsets[direction]; }
-};
-
-
 // List of neighbors of a cell: [cell][direction]
 //typedef std::vector<std::array<Move, kNumNeighbours>> NeighborList;
 
@@ -108,7 +93,8 @@ class HiveState : public State {
   Action StringToAction(Player player,
                         const std::string& move_str) const override;
   bool IsTerminal() const override {
-    return IsQueenSurrounded(kPlayerWhite) || IsQueenSurrounded(kPlayerBlack); 
+    return board_->IsQueenSurrounded(kPlayerWhite) ||
+           board_->IsQueenSurrounded(kPlayerBlack); 
   }
   std::vector<double> Returns() const override;
   std::string InformationStateString(Player player) const override;
@@ -121,12 +107,15 @@ class HiveState : public State {
   std::unique_ptr<State> Clone() const override;
   std::vector<Action> LegalActions() const override;
 
+  // LINK TO UHP DEFINITION OF:
+  // GameTypeString;GameStateString;TurnString;MoveString1;MoveString2;MoveStringN
+  std::string Serialize() const override;
+
+
   // custom
   Move ActionToMove(Action action) const;
   Action MoveToAction(Move& move) const;
   //HiveTilePtr& StringToTile(const std::string& str) const;
-
-  bool IsQueenSurrounded(const Player& player) const;
 
 
  protected:
@@ -160,7 +149,6 @@ class HiveGame : public Game {
   std::array<int,3> ActionsShape() const { return {7,28,28}; }
   int NumDistinctActions() const override { return 5488 + 1; } // +1 for pass
   inline std::unique_ptr<State> NewInitialState() const override {
-    std::cout << "check3" << std::endl;
     return std::unique_ptr<State>(
         new HiveState(shared_from_this(), 8));
   }
@@ -169,12 +157,14 @@ class HiveGame : public Game {
   absl::optional<double> UtilitySum() const override { return 0; }
   double MaxUtility() const override { return 1; }
   std::vector<int> ObservationTensorShape() const override {
-    return { 16 /*num bug types x num_players */ + 1 /* negative space plane */ + 1 /* articulation points */,
+    return { 16 /*num bug types x num_players */ + 2 /* player influence plane */ + 1 /* articulation points */,
     2*kBoardRadius + 1, /*dimensions of a sq board from hex board is: (2*radius + 1)*/
     2*kBoardRadius + 1};
   }
   int MaxGameLength() const override { return 250; }
 
+  std::unique_ptr<State> DeserializeState(const std::string& str) const override;
+  
  private:
   const int kBoardRadius;
 };
@@ -182,146 +172,5 @@ class HiveGame : public Game {
 
 }  // namespace hive
 }  // namespace open_spiel
-
-
-
-/*
-  // Represents a single cell on the board, as well as the structures needed for
-  // groups of cells. Groups of cells are defined by a union-find structure
-  // embedded in the array of cells. Following the `parent` indices will lead to
-  // the group leader which has the up to date size, corner and edge
-  // connectivity of that group. Size, corner and edge are not valid for any
-  // cell that is not a group leader.
-  struct Cell {
-    // Who controls this cell.
-    Player player;
-
-    // Whether this cell is marked/visited in a ring search. Should always be
-    // false except while running CheckRingDFS.
-    bool mark;
-
-    // A parent index to allow finding the group leader. It is the leader of the
-    // group if it points to itself. Allows path compression to shorten the path
-    // from a direct parent to the leader.
-    uint16_t parent;
-
-    // These three are only defined for the group leader's cell.
-    uint16_t size;   // Size of this group of cells.
-    uint8_t corner;  // A bitset of which corners this group is connected to.
-    uint8_t edge;    // A bitset of which edges this group is connected to.
-
-    Cell() {}
-    Cell(Player player_, int parent_, int corner_, int edge_)
-        : player(player_),
-          mark(false),
-          parent(parent_),
-          size(1),
-          corner(corner_),
-          edge(edge_) {}
-
-    // How many corner or edges this group of cell is connected to. Only defined
-    // if called on the group leader.
-    int NumCorners() const;
-    int NumEdges() const;
-  };
-
- public:
-  HiveState(std::shared_ptr<const Game> game, int board_size,
-                bool ansi_color_output = false, bool allow_swap = false);
-
-  HiveState(const HiveState&) = default;
-
-  Player CurrentPlayer() const override {
-    return IsTerminal() ? kTerminalPlayerId : static_cast<int>(current_player_);
-  }
-  std::string ActionToString(Player player, Action action_id) const override;
-  std::string ToString() const override;
-  bool IsTerminal() const override { return outcome_ != kPlayerEmpty; }
-  std::vector<double> Returns() const override;
-  std::string InformationStateString(Player player) const override;
-  std::string ObservationString(Player player) const override;
-
-  // A 3d tensor, 3 player-relative one-hot 2d planes. The layers are: the
-  // specified player, the other player, and empty.
-  void ObservationTensor(Player player,
-                         absl::Span<float> values) const override;
-  std::unique_ptr<State> Clone() const override;
-  std::vector<Action> LegalActions() const override;
-
- protected:
-  void DoApplyAction(Action action) override;
-
-  // Find the leader of the group. Not const due to union-find path compression.
-  int FindGroupLeader(int cell);
-
-  // Join the groups of two positions, propagating group size, and edge/corner
-  // connections. Returns true if they were already the same group.
-  bool JoinGroups(int cell_a, int cell_b);
-
-  // Do a depth first search for a ring starting at `move`.
-  // `left` and `right give the direction bounds for the search. A valid ring
-  // won't take any sharp turns, only going in one of the 3 forward directions.
-  // The only exception is the very beginning where we don't know the direction
-  // and it's valid to search in all 6 directions. 4 is enough though, since any
-  // valid ring can't start and end in the 2 next to each other while still
-  // going through `move.`
-  bool CheckRingDFS(const Move& move, int left, int right);
-
-  // Turn an action id into a `Move` with an x,y.
-  Move ActionToMove(Action action_id) const;
-
-  bool AllowSwap() const;
-
- private:
-  std::vector<Cell> board_;
-  Player current_player_ = kPlayer1;
-  Player outcome_ = kPlayerEmpty;
-  const int board_size_;
-  const int board_diameter_;
-  const int valid_cells_;
-  int moves_made_ = 0;
-  Move last_move_ = kMoveNone;
-  const NeighborList& neighbors_;
-  const bool ansi_color_output_;
-  const bool allow_swap_;
-  */
-
-
-
-
-
-
-  /*
-
-  int NumDistinctActions() const override {
-    // Really diameter^2 - size*(size-1), but that's harder to represent, so
-    // the extra actions in the corners are never legal.
-    return Diameter() * Diameter();
-  }
-  std::unique_ptr<State> NewInitialState() const override {
-    return std::unique_ptr<State>(
-        new HiveState(shared_from_this(), board_size_, ansi_color_output_,
-                          allow_swap_));
-  }
-  int NumPlayers() const override { return kNumPlayers; }
-  double MinUtility() const override { return -1; }
-  absl::optional<double> UtilitySum() const override { return 0; }
-  double MaxUtility() const override { return 1; }
-  std::vector<int> ObservationTensorShape() const override {
-    return {kCellStates, Diameter(), Diameter()};
-  }
-  int MaxGameLength() const override {
-    // The true number of playable cells on the board.
-    // No stones are removed, and it is possible to draw by filling the board.
-    return Diameter() * Diameter() - board_size_ * (board_size_ - 1) +
-           allow_swap_;
-  }
-
- private:
-  int Diameter() const { return board_size_ * 2 - 1; }
-  const int board_size_;
-  const bool ansi_color_output_ = false;
-  const bool allow_swap_ = false;
-  */
 
 #endif  // OPEN_SPIEL_GAMES_HIVE_H_

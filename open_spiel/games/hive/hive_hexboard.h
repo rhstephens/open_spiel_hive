@@ -32,9 +32,6 @@ namespace open_spiel {
 namespace hive {
 
 
-inline constexpr Player kPlayerWhite = 0;
-inline constexpr Player kPlayerBlack = 1;
-
 enum class BugType : int8_t {
   kNone = -1,
   kQueen = 0,
@@ -68,7 +65,7 @@ using HiveOffset = HivePosition;
 class HivePosition {
  public:
 
-  constexpr HivePosition(const int8_t q = 0, const int8_t r = 0, const int8_t h = 0) 
+  constexpr HivePosition(int8_t q = 0, int8_t r = 0, int8_t h = 0) 
     : q_(q), r_(r), s_(-q - r), h_(h) {}
 
   int8_t Q() const { return q_; }
@@ -80,15 +77,35 @@ class HivePosition {
   // height above the hive, where 0 == "ground"
   int8_t H() const { return h_; }
 
-  inline bool operator==(HivePosition& other) const {
-    return q_ == other.q_ && r_ == other.r_ && h_ == other.h_; 
-  } 
   inline bool operator==(const HivePosition& other) const {
     return q_ == other.q_ && r_ == other.r_ && h_ == other.h_; 
   }
 
+  inline bool operator!=(const HivePosition& other) const {
+    return !operator==(other);
+  }
+
   inline HivePosition operator+(const HivePosition& other) const {
     return HivePosition(q_ + other.q_, r_ + other.r_, h_ + other.h_);
+  }
+
+  inline HivePosition operator-(const HivePosition& other) const {
+    return HivePosition(q_ - other.q_, r_ - other.r_, h_ - other.h_);
+  }
+
+  inline HivePosition& operator+=(const HivePosition& other) {
+    q_ += other.q_;
+    r_ += other.r_;
+    h_ += other.h_;
+
+    // recompute implicit S
+    s_ = -q_ -r_;
+
+    return *this;
+  }
+
+  std::string ToString() const {
+    return absl::StrCat("(", std::to_string(q_), ", ", std::to_string(r_), ", ", std::to_string(h_), ")");
   }
 
   HiveOffset DistanceTo(const HivePosition& other) const;
@@ -101,18 +118,24 @@ class HivePosition {
 
 };
 
+inline std::ostream& operator<<(std::ostream& stream, const HivePosition& pos) {
+  return stream << pos.ToString();
+}
+
 // support hashing for HivePosition
 template <typename H>
 H AbslHashValue(H state, const HivePosition& pos) {
   return H::combine(std::move(state), pos.Q(), pos.R(), pos.H());
 }
 
+inline constexpr Player kPlayerWhite = 0;
+inline constexpr Player kPlayerBlack = 1;
 inline constexpr HivePosition kOriginPosition { 0, 0, 0 };
 inline constexpr HivePosition kNullPosition { 0, 0, -1 };
 
 // All offsets starting at top-right neighbour, and then rotating clockwise,
 // plus above for beetles/mosquitos
-const std::array<HiveOffset,kNumDirections> kNeighbourOffsets = {
+const std::array<HiveOffset, kNumDirections> kNeighbourOffsets = {
   //  NE       E      SE       SW       W       NW       Above
   {{1, -1}, {1, 0}, {0, 1}, {-1, 1}, {-1, 0}, {0, -1}, {0, 0, 1}}
 };
@@ -150,15 +173,16 @@ class HiveTile {
   Player GetPlayer() const { return player_; }
   HivePosition GetPosition() const { return pos_; }
   int GetOrdinal() const { return type_ordinal_; }
-  void SetPosition(HivePosition& other) { pos_ = other; }
+  void SetPosition(HivePosition other) { pos_ = other; }
   void GetNeighbours(std::vector<std::shared_ptr<HiveTile>>& in_vec);
   void GetEmptyNeighbours(std::vector<HivePosition>& in_vec);
   void GetAllAbove(std::vector<std::shared_ptr<HiveTile>>& in_vec);
   void GetAllBelow(std::vector<std::shared_ptr<HiveTile>>& in_vec);
 
-
-
-  constexpr bool IsInHand() const { return pos_ == kNullPosition; }
+  inline void Pin() { pinned_ = true; }
+  inline void UnPin() { pinned_ = false; }
+  inline bool IsPinned() const { return pinned_; }
+  inline bool IsInPlay() const { return pos_ != kNullPosition; }
   
   // Tile names as defined by the Universal Hive Protocol:
   // https://github.com/jonthysell/Mzinga/wiki/UniversalHiveProtocol#movestring
@@ -170,10 +194,10 @@ class HiveTile {
   //size_t HashValue() const;
 
  private:
-  std::array<std::shared_ptr<HiveTile>,kNumDirections-1> neighbours_;
   std::vector<std::shared_ptr<HiveTile>> stack_; // (directly above or below)
 
   HivePosition pos_ = kNullPosition;
+  bool pinned_;
   const Player player_;
   const BugType type_;
   const int type_ordinal_; // is it the first/second/third piece of its type played?
@@ -181,7 +205,7 @@ class HiveTile {
 };
 
 using HiveTilePtr = std::shared_ptr<HiveTile>;
-using HiveTileSet = absl::flat_hash_set<HiveTilePtr>;
+using HiveTileList = std::vector<HiveTilePtr>;
 
 // special tile under (0,0) to enforce the first tile location at the origin and
 // to represent empty tiles
@@ -190,28 +214,35 @@ using HiveTileSet = absl::flat_hash_set<HiveTilePtr>;
 // };
 
 
-// support heterogenous lookup for HiveTiles
-// template <typename H>
-// H AbslHashValue(H state, const HiveTile& tile) {
-//   return H::combine(std::move(state), tile.player_, tile.type_, tile.type_ordinal_);
-// }
+// Encodes a move as defined by the Universal Hive Protocol
+// {INSERT LINK} //////
+struct Move {
+  Player player;          // whose turn was it during this move
+  HiveTilePtr from;       // the tile that's being moved
+  HiveTilePtr to;         // the reference tile
+  Direction direction;    // offset applied to the reference tile
+  bool is_pass = false;
+
+  std::string ToUHP();
+  HivePosition StartPosition() { return from->GetPosition(); }
+  HivePosition EndPosition() { return to->GetPosition() + kNeighbourOffsets[direction]; }
+};
 
 
 class HexBoard {
  public:
 
-  // Creates a regular hexagonal board with given radius (excluding the center)
+  // Creates a regular hexagonal board with given radius from the center
   // The formula is: 3r^2 + 3r + 1 + an extra tile for each stackable piece
-  // 
   HexBoard(std::shared_ptr<const Game> game, const int board_radius,
            const int num_stackable = 6);
 
   int NumUniqueTiles() const { return num_tiles_; }
 
-  void CreateTile(const Player player, const BugType type, const int ordinal);
+  void CreateTile(const Player player, const BugType type, int ordinal);
 
-  absl::optional<HiveTilePtr> GetTileAt(const HivePosition& pos) const;
-  absl::optional<HiveTilePtr> GetTileFromUHP(const std::string& uhp) const;
+  absl::optional<HiveTilePtr> GetTileAt(const HivePosition& pos, bool get_top_tile);
+  HiveTilePtr& GetTileFromUHP(const std::string& uhp);
 
   void GetNeighbourTilePositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
   void GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
@@ -223,9 +254,35 @@ class HexBoard {
 
   int Radius() const { return board_radius_; }
 
+  const HiveTilePtr& LastMovedTile() const;
+  HiveTileList NeighboursOf(HiveTilePtr& tile, bool ignore_above);
+  HiveTileList NeighboursOf(HivePosition pos, bool ignore_above);
+  void PlaceTile(HiveTilePtr& tile, HivePosition new_pos);
+  void MoveTile(HiveTilePtr& tile, HivePosition new_pos);
+  bool IsInPlay(Player player, BugType type, int ordinal = -1) const;
+  bool IsPinned(HiveTilePtr& tile) const;
+  bool IsQueenSurrounded(Player player);
+
+  void GenerateAllMoves(std::vector<Move>& out, Player player, int move_number);
+
   
  private:
-  void MoveTile(HiveTilePtr& tile, HivePosition new_position);
+  void GeneratePlacementMoves(std::vector<Move>& out, Player player, int move_number);
+  void GenerateMovesFor(std::vector<Move>& out, HiveTilePtr& tile, Player player);
+
+  void GenerateValidSlides(std::vector<HivePosition>& out, HiveTilePtr& tile, int distance);
+  void GenerateValidClimbs(std::vector<HivePosition>& out, HiveTilePtr& tile);
+  void GenerateValidGrasshopperPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
+  void GenerateValidLadybugPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
+  void GenerateValidMosquitoPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
+  void GenerateValidPillbugSpecials(std::vector<HivePosition>& out, HiveTilePtr& tile);
+
+  bool IsGated(HivePosition pos, Direction d) const;
+  bool IsTopOfStack(HiveTilePtr& tile) const;
+
+  void MaybeUpdateSlideCache();
+  void UpdateInfluence(Player player);
+  absl::optional<HiveTilePtr> FindNeighbourTileRef(HivePosition& pos);
 
   const int board_radius_;
   const int num_tiles_;
@@ -235,28 +292,39 @@ class HexBoard {
   // this first vec contains the initial instantiation of each tile in memory,
   // while the other hashmaps are used for quick lookups based on other 
   // hashable features of the tile
-  std::vector<HiveTilePtr> tiles_;
-  HiveTileSet played_tiles_;
-  absl::flat_hash_map<Player, HiveTileSet> player_tiles_;
-  absl::flat_hash_map<BugType, HiveTileSet> type_tiles_;
+  HiveTileList tiles_;
+  HiveTileList played_tiles_;
+  std::array<HiveTileList, 2> player_tiles_;
+  absl::flat_hash_map<BugType, HiveTileList> type_tiles_;
   absl::flat_hash_map<HivePosition, HiveTilePtr> position_cache_;
 
+  // minimal graph representation of the hive used for quick game logic
+  // stores the encoded tile
+  struct Node {
+    int tile;
+    int above = -1;
+    int below = -1;
+    std::array<int, kNumDirections - 1> neighbours = { -1 };
 
-  // using the zobrist hashing technique commonly used in chess programming
-  // to uniquely hash the state of the board and any actions applied to it
-  //uint64_t zobrist_hash_;
+    void ClearNeighbours() { neighbours.fill(-1); above = -1; below = -1; }
+  };
 
+  // Every slide has a direction and a reference tile that it "slides around"
+  // to maintain connectivity. A slide will be valid for any tile, except the
+  // reference tile, as that tile is required to move in the given direction
+  struct Slide {
+    Direction dir;
+    HiveTilePtr ref_tile;
+  };
 
-  // not needed?????
-  // const std::unordered_map<HivePosition, std::string> offset_to_string = {
-  //   {kNeighbourOffsets[0], "/"},
-  //   {kNeighbourOffsets[1], "-"},
-  //   {kNeighbourOffsets[2], "\\"},
-  //   {kNeighbourOffsets[3], "/"},
-  //   {kNeighbourOffsets[4], "-"},
-  //   {kNeighbourOffsets[5], "\\"}
-  // };
-
+  // stores what Direction(s) a tile can move/climb in from a given HivePosition
+  absl::flat_hash_map<HivePosition, std::vector<Slide>> slidability_cache_;
+  absl::flat_hash_map<HivePosition, std::vector<Direction>> climbability_cache_;
+  HiveTilePtr last_moved_;
+  bool cache_valid_;
+  
+  // contains the positions surrounding played tiles. Used for placement rules
+  std::array<absl::flat_hash_set<HivePosition>, 2> player_influence_;
 };
 
 }  // namespace hive
