@@ -53,7 +53,8 @@ enum Direction : uint8_t {
   kW,
   kNW,
   kAbove,
-  kNumDirections
+  kNumCardinalDirections = kAbove, // syntactic sugar for iterating below kAbove
+  kNumAllDirections
 };
 
 class HivePosition;
@@ -72,6 +73,7 @@ class HivePosition {
   int8_t R() const { return r_; }
 
   // implicit third coordinate s = -q - r to satisfy constraint: q + r + s = 0
+  // TODO: may not be needed???
   int8_t S() const { return s_; }
 
   // height above the hive, where 0 == "ground"
@@ -108,8 +110,6 @@ class HivePosition {
     return absl::StrCat("(", std::to_string(q_), ", ", std::to_string(r_), ", ", std::to_string(h_), ")");
   }
 
-  HiveOffset DistanceTo(const HivePosition& other) const;
-
  private:
   int8_t q_;
   int8_t r_;
@@ -135,7 +135,7 @@ inline constexpr HivePosition kNullPosition { 0, 0, -1 };
 
 // All offsets starting at top-right neighbour, and then rotating clockwise,
 // plus above for beetles/mosquitos
-const std::array<HiveOffset, kNumDirections> kNeighbourOffsets = {
+const std::array<HiveOffset, Direction::kNumAllDirections> kNeighbourOffsets = {
   //  NE       E      SE       SW       W       NW       Above
   {{1, -1}, {1, 0}, {0, 1}, {-1, 1}, {-1, 0}, {0, -1}, {0, 0, 1}}
 };
@@ -159,7 +159,7 @@ const std::unordered_map<char, BugType> kUHPToBugType = {
 // tile, and anything else should be a pointer to that HiveTile
 class HiveTile {
  public:
-  HiveTile(const HivePosition& pos, Player player, BugType type, int ord)
+  HiveTile(const HivePosition& pos, Player player, BugType type, uint8_t ord)
     : pos_(pos), player_(player), type_(type), type_ordinal_(ord) {}
 
   // ignore position, there should never be two tiles in one spot
@@ -172,16 +172,13 @@ class HiveTile {
   BugType GetBugType() const { return type_; }
   Player GetPlayer() const { return player_; }
   HivePosition GetPosition() const { return pos_; }
-  int GetOrdinal() const { return type_ordinal_; }
+  uint8_t GetOrdinal() const { return type_ordinal_; }
   void SetPosition(HivePosition other) { pos_ = other; }
   void GetNeighbours(std::vector<std::shared_ptr<HiveTile>>& in_vec);
   void GetEmptyNeighbours(std::vector<HivePosition>& in_vec);
   void GetAllAbove(std::vector<std::shared_ptr<HiveTile>>& in_vec);
   void GetAllBelow(std::vector<std::shared_ptr<HiveTile>>& in_vec);
 
-  inline void Pin() { pinned_ = true; }
-  inline void UnPin() { pinned_ = false; }
-  inline bool IsPinned() const { return pinned_; }
   inline bool IsInPlay() const { return pos_ != kNullPosition; }
   
   // Tile names as defined by the Universal Hive Protocol:
@@ -197,10 +194,9 @@ class HiveTile {
   std::vector<std::shared_ptr<HiveTile>> stack_; // (directly above or below)
 
   HivePosition pos_ = kNullPosition;
-  bool pinned_;
   const Player player_;
   const BugType type_;
-  const int type_ordinal_; // is it the first/second/third piece of its type played?
+  const uint8_t type_ordinal_; // is it the first/second/third piece of its type played?
 
 };
 
@@ -217,7 +213,7 @@ using HiveTileList = std::vector<HiveTilePtr>;
 // Encodes a move as defined by the Universal Hive Protocol
 // {INSERT LINK} //////
 struct Move {
-  Player player;          // whose turn was it during this move
+  //Player player;          // whose turn was it during this move
   HiveTilePtr from;       // the tile that's being moved
   HiveTilePtr to;         // the reference tile
   Direction direction;    // offset applied to the reference tile
@@ -241,48 +237,56 @@ class HexBoard {
 
   void CreateTile(const Player player, const BugType type, int ordinal);
 
-  absl::optional<HiveTilePtr> GetTileAt(const HivePosition& pos, bool get_top_tile);
+  absl::optional<HiveTilePtr> GetTopTileAt(const HivePosition& pos);
+  absl::optional<HiveTilePtr> GetTileAbove(const HivePosition& pos);
+  absl::optional<HiveTilePtr> GetTileBelow(const HivePosition& pos);
   HiveTilePtr& GetTileFromUHP(const std::string& uhp);
 
-  void GetNeighbourTilePositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
-  void GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
+  // void GetNeighbourTilePositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
+  // void GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec, const HivePosition pos);
 
-  HiveTile& GetTileAbove(const HiveTile& tile) const;
-
-  int EncodeTile(HiveTilePtr& tile, const Player player) const;
-  HiveTilePtr& DecodeTile(int encoding, const Player player);
+  int EncodeTile(HiveTilePtr& tile) const;
+  HiveTilePtr& DecodeTile(int encoding);
 
   int Radius() const { return board_radius_; }
 
   const HiveTilePtr& LastMovedTile() const;
-  HiveTileList NeighboursOf(HiveTilePtr& tile, bool ignore_above);
-  HiveTileList NeighboursOf(HivePosition pos, bool ignore_above);
+  const HiveTilePtr& LastStunnedTile() const;
+  HiveTileList NeighboursOf(HivePosition pos);
   void PlaceTile(HiveTilePtr& tile, HivePosition new_pos);
-  void MoveTile(HiveTilePtr& tile, HivePosition new_pos);
+  void MoveTile(HiveTilePtr& tile, HivePosition new_pos, Player player);
   bool IsInPlay(Player player, BugType type, int ordinal = -1) const;
-  bool IsPinned(HiveTilePtr& tile) const;
   bool IsQueenSurrounded(Player player);
 
   void GenerateAllMoves(std::vector<Move>& out, Player player, int move_number);
-
+  void GenerateMovesFor(std::vector<Move>& out, const HivePosition& pos, BugType type, Player player);
+  void Pass();
   
  private:
+  struct TileReference {
+    HiveTilePtr tile;
+    Direction dir;
+  };
+
   void GeneratePlacementMoves(std::vector<Move>& out, Player player, int move_number);
-  void GenerateMovesFor(std::vector<Move>& out, HiveTilePtr& tile, Player player);
 
-  void GenerateValidSlides(std::vector<HivePosition>& out, HiveTilePtr& tile, int distance);
-  void GenerateValidClimbs(std::vector<HivePosition>& out, HiveTilePtr& tile);
-  void GenerateValidGrasshopperPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
-  void GenerateValidLadybugPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
-  void GenerateValidMosquitoPositions(std::vector<HivePosition>& out, HiveTilePtr& tile);
-  void GenerateValidPillbugSpecials(std::vector<HivePosition>& out, HiveTilePtr& tile);
+  void GenerateValidSlides(std::vector<HivePosition>& out, const HivePosition& pos, int distance);
+  void GenerateValidClimbs(std::vector<HivePosition>& out, const HivePosition& pos);
+  void GenerateValidGrasshopperPositions(std::vector<HivePosition>& out, const HivePosition& pos);
+  void GenerateValidLadybugPositions(std::vector<HivePosition>& out, const HivePosition& pos);
+  void GenerateValidMosquitoPositions(std::vector<HivePosition>& out, const HivePosition& pos);
+  void GenerateValidPillbugSpecials(std::vector<Move>& out, const HivePosition& pos);
 
-  bool IsGated(HivePosition pos, Direction d) const;
-  bool IsTopOfStack(HiveTilePtr& tile) const;
+  bool IsGated(const HivePosition& pos, Direction d) const;
+  bool IsCovered(const HivePosition& pos) const;
+  bool IsPinned(const HivePosition& pos) const {
+    return articulation_points_.contains(pos);
+  }
 
   void MaybeUpdateSlideCache();
+  void MaybeUpdateArticulationPoints();
   void UpdateInfluence(Player player);
-  absl::optional<HiveTilePtr> FindNeighbourTileRef(HivePosition& pos);
+  std::vector<TileReference> NeighbourReferenceTiles(HivePosition& pos);
 
   const int board_radius_;
   const int num_tiles_;
@@ -300,27 +304,27 @@ class HexBoard {
 
   // minimal graph representation of the hive used for quick game logic
   // stores the encoded tile
-  struct Node {
-    int tile;
-    int above = -1;
-    int below = -1;
-    std::array<int, kNumDirections - 1> neighbours = { -1 };
+  // struct Node {
+  //   int tile;
+  //   int above = -1;
+  //   int below = -1;
+  //   std::array<int, Direction::kNumCardinalDirections> neighbours = { -1 };
 
-    void ClearNeighbours() { neighbours.fill(-1); above = -1; below = -1; }
-  };
+  //   void ClearNeighbours() { neighbours.fill(-1); above = -1; below = -1; }
+  // };
+
+  
+  
 
   // Every slide has a direction and a reference tile that it "slides around"
   // to maintain connectivity. A slide will be valid for any tile, except the
   // reference tile, as that tile is required to move in the given direction
-  struct Slide {
-    Direction dir;
-    HiveTilePtr ref_tile;
-  };
+  absl::flat_hash_map<HivePosition, std::vector<TileReference>> slidability_cache_;
 
-  // stores what Direction(s) a tile can move/climb in from a given HivePosition
-  absl::flat_hash_map<HivePosition, std::vector<Slide>> slidability_cache_;
+  absl::flat_hash_set<HivePosition> articulation_points_;
   absl::flat_hash_map<HivePosition, std::vector<Direction>> climbability_cache_;
   HiveTilePtr last_moved_;
+  HiveTilePtr last_stunned_;
   bool cache_valid_;
   
   // contains the positions surrounding played tiles. Used for placement rules

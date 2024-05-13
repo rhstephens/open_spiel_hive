@@ -30,29 +30,45 @@ void BasicHiveTests() {
   std::shared_ptr<const Game> game = LoadGame("hive(board_size=8)");
   std::unique_ptr<State> state = game->NewInitialState();
 
+  // HivePosition p = {0,2,1};
+  // std::shared_ptr<HivePosition> pp = std::make_shared<HivePosition>(1,2,3);
+  // std::vector<HivePosition> vec = {{0, 0, 1}, {0,1,0}};
+  std::cout << "sizeof(HivePosition): " << sizeof(HivePosition) << std::endl;
+  std::cout << "sizeof(HiveTile): " << sizeof(HiveTile) << std::endl;
+  std::cout << "sizeof(HiveTilePtr): " << sizeof(HiveTilePtr) << std::endl;
+  std::cout << "sizeof(void*): " << sizeof(void*) << std::endl;
+  std::cout << "sizeof(HexBoard): " << sizeof(HexBoard) << std::endl;
+  // std::cout << "sizeof(std::vector<HivePosition>): " << sizeof(std::vector<HivePosition>) << std::endl;
+  // std::cout << "sizeof(std::vector<HivePosition> size 2): " << sizeof(vec) << std::endl;
+  // std::cout << "sizeof(shared_ptr<HivePosition>): " << sizeof(std::shared_ptr<HivePosition>) << std::endl;
+  // std::cout << "sizeof(shared_ptr<HivePosition>&): " << sizeof(std::shared_ptr<HivePosition>&) << std::endl;
+  // std::cout << "sizeof(HivePosition*): " << sizeof(pp.get()) << std::endl;
+  // std::cout << "sizeof(\"wA3\"): " << sizeof("wA3") << std::endl;
+  // std::cout << "sizeof(\"wA3 -bB1\"): " << sizeof("wA3 -bB1") << std::endl;
+
   std::cout << "**Testing action to string mappings**" << '\n';
   for (int i = 0; i < state->NumDistinctActions(); ++ i) {
     std::string a_to_s = state->ActionToString(i);
     SPIEL_CHECK_EQ(i, state->StringToAction(a_to_s));
 
-    std::cout << i << ": " << a_to_s << '\n';
+    //std::cout << i << ": " << a_to_s << '\n';
   }
-  std::cout << std::endl;
+  std::cout << "Action to String mapping passed!" << std::endl;
 
-  while(true) {
-    std::cout << "[Enter move string or action number]> ";
-    std::string line = "";
-    std::getline(std::cin, line);
-    absl::StripAsciiWhitespace(&line);
+  // while(true) {
+  //   std::cout << "[Enter move string or action number]> ";
+  //   std::string line = "";
+  //   std::getline(std::cin, line);
+  //   absl::StripAsciiWhitespace(&line);
 
-    Action action;
-    bool valid_integer = absl::SimpleAtoi(line, &action);
-    if (valid_integer) {
-      std::cout << state->ActionToString(action) << std::endl;
-    } else {
-      std:: cout << state->StringToAction(line) << std::endl;
-    }
-  }
+  //   Action action;
+  //   bool valid_integer = absl::SimpleAtoi(line, &action);
+  //   if (valid_integer) {
+  //     std::cout << state->ActionToString(action) << std::endl;
+  //   } else {
+  //     std:: cout << state->StringToAction(line) << std::endl;
+  //   }
+  // }
   
 
   testing::ConsolePlayTest(*LoadGame("hive(board_size=8)"));

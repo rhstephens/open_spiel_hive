@@ -115,6 +115,7 @@ class HiveState : public State {
   // custom
   Move ActionToMove(Action action) const;
   Action MoveToAction(Move& move) const;
+  std::string PrintBoard(HiveTilePtr tile_to_move = nullptr) const;
   //HiveTilePtr& StringToTile(const std::string& str) const;
 
 
@@ -126,7 +127,11 @@ class HiveState : public State {
   inline void BugPlayed(BugType type) { ++type_played_counts_.at(type); }
 
   Player current_player_ = kPlayerWhite;
+  // TODO CHANGE BACK
+public:
   std::unique_ptr<HexBoard> board_;
+private:
+  // TODO CHANGE BACK
   std::unordered_map<BugType,uint8_t> type_played_counts_ = {
     {BugType::kQueen,       0},
     {BugType::kAnt,         0},

@@ -43,11 +43,10 @@ HexBoard::HexBoard(std::shared_ptr<const Game> game,
       num_stackable_(num_stackable),
       num_tiles_(28) { // constant 28 for now?
 
-  std::cout << "Creating HexBoard size: " << board_radius << std::endl;
   tiles_.reserve(num_tiles_);
 
   for (auto& direction_list : slidability_cache_) {
-    direction_list.second.reserve(Direction::kNumDirections);
+    direction_list.second.reserve(Direction::kNumCardinalDirections);
   }
 }
 
@@ -62,60 +61,63 @@ void HexBoard::CreateTile(const Player player, const BugType type, int ordinal) 
 }
 
 
-void HexBoard::GetNeighbourTilePositions(std::vector<HivePosition>& in_vec,
-                                         const HivePosition pos) {
-  for (auto offset : kNeighbourOffsets) {
-    HivePosition new_pos = pos + offset;
+// void HexBoard::GetNeighbourTilePositions(std::vector<HivePosition>& in_vec,
+//                                          const HivePosition pos) {
+//   for (auto offset : kNeighbourOffsets) {
+//     HivePosition new_pos = pos + offset;
 
-    // is there a tile at this position?
-    if (position_cache_.contains(new_pos)) {
-        in_vec.push_back(new_pos);
-    }
+//     // is there a tile at this position?
+//     if (position_cache_.contains(new_pos)) {
+//         in_vec.push_back(new_pos);
+//     }
+//   }
+// }
+
+// void HexBoard::GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec,
+//                                           const HivePosition pos) {
+//   for (auto& offset : kNeighbourOffsets) {
+//     HivePosition new_pos = pos + offset;
+
+//     // is there no tile at this position?
+//     if (!position_cache_.contains(new_pos)) {
+//         in_vec.push_back(new_pos);
+//     }
+//   }
+// }
+
+
+absl::optional<HiveTilePtr> HexBoard::GetTileAbove(const HivePosition& pos) {
+  HivePosition to_test = {pos.Q(), pos.R(), pos.H() + 1};
+  if (position_cache_.contains(to_test)) {
+    return position_cache_.at(to_test);
   }
+  return absl::nullopt;
 }
 
-void HexBoard::GetNeighbourEmptyPositions(std::vector<HivePosition>& in_vec,
-                                          const HivePosition pos) {
-  for (auto& offset : kNeighbourOffsets) {
-    HivePosition new_pos = pos + offset;
 
-    // is there no tile at this position?
-    if (!position_cache_.contains(new_pos)) {
-        in_vec.push_back(new_pos);
-    }
+absl::optional<HiveTilePtr> HexBoard::GetTileBelow(const HivePosition& pos) {
+  HivePosition to_test = {pos.Q(), pos.R(), pos.H() - 1};
+  if (position_cache_.contains(to_test)) {
+    return position_cache_.at(to_test);
   }
+  return absl::nullopt;
 }
 
 
 // A tile can be encoded by its position in an array of tiles
 // laid out left-to-right containing every piece in the game.
 // Conveniently, this is the order the tiles are created in
-int HexBoard::EncodeTile(HiveTilePtr& tile, const Player player) const {
+int HexBoard::EncodeTile(HiveTilePtr& tile) const {
   int encoding = -1;
 
   auto it = std::find(tiles_.begin(), tiles_.end(), tile);
   SPIEL_CHECK_TRUE(it != tiles_.end());
   encoding = std::distance(tiles_.begin(), it);
 
-  // if current player is black, we want black tiles to be indices 0->numtiles/2
-  // and white tiles to be numtiles/2->numtiles. So return an offset modulo to
-  // represent black's point of view
-
-  // when it is black's turn, the encoding should be as if they were white,
-  // so add an offset and return the modulo to represent black's point of view
-  // if (player == kPlayerBlack) {
-  //   encoding = (encoding + num_tiles_/2) % num_tiles_;
-  // }
-
   return encoding;
 }
 
-HiveTilePtr& HexBoard::DecodeTile(int encoding, const Player player) {
-  // undo the offset if player is black
-  // if (player == kPlayerBlack) {
-  //   encoding = (encoding + num_tiles_/2) % num_tiles_;
-  // }
-
+HiveTilePtr& HexBoard::DecodeTile(int encoding) {
   SPIEL_CHECK_TRUE(encoding >= 0 && encoding < num_tiles_);
   return tiles_.at(encoding);
 }
@@ -129,13 +131,20 @@ void HexBoard::GenerateAllMoves(std::vector<Move>& out_vec, Player player, int m
   // generate legal moves for tiles already on the board
   if (IsInPlay(player, BugType::kQueen)) {
     for (auto& tile : played_tiles_) {
-      if (tile->GetPlayer() != player) {
+      if (tile->GetPlayer() != player || tile == last_stunned_) {
         continue;
       }
 
-      GenerateMovesFor(out_vec, tile, player);
+      GenerateMovesFor(out_vec, tile->GetPosition(), tile->GetBugType(), player);
     }
   }
+
+  // TODO: REMOVE
+  std::cout << "Articulation points:" << std::endl;
+  for (auto pos : articulation_points_) {
+    std::cout << position_cache_.at(pos)->ToUHP() << ", ";
+  }
+  std::cout << std::endl;
 }
 
 
@@ -150,8 +159,7 @@ void HexBoard::GeneratePlacementMoves(std::vector<Move>& out, Player player, int
 
       // playing the first tile at the origin is encoded as a move where
       // a tile is placed "on top of nothing", i.e. from=tile, to=nullptr
-      out.emplace_back(Move{player,
-                            tile,
+      out.emplace_back(Move{tile,
                             nullptr,
                             Direction::kAbove});
     }
@@ -164,13 +172,8 @@ void HexBoard::GeneratePlacementMoves(std::vector<Move>& out, Player player, int
         continue;
       }
 
-      for (int i = 0; i < Direction::kNumDirections; ++i) {
-        if (i == Direction::kAbove) {
-          continue;
-        }
-
-        out.emplace_back(Move{player,
-                              tile,
+      for (int i = 0; i < Direction::kNumCardinalDirections; ++i) {
+        out.emplace_back(Move{tile,
                               played_tiles_.front(),
                               static_cast<Direction>(i)});
       }
@@ -204,18 +207,13 @@ void HexBoard::GeneratePlacementMoves(std::vector<Move>& out, Player player, int
           continue;
         }
 
-        // for completeness, ANY neighbouring tile can be used as the reference
-        // excluding kAbove, as you can't place a tile from hand on top of another
-        for (uint8_t i = 0; i < Direction::kNumDirections; ++i) {
-          if (i == Direction::kAbove) {
-            continue;
-          }
-
-          HivePosition to_position = pos + kNeighbourOffsets[i];
-          if (position_cache_.contains(to_position)) {
-            out.emplace_back(Move{player,
-                                  tile,
-                                  position_cache_.at(to_position),
+        // for completeness, any neighbouring tile can be used as the reference
+        for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
+          HivePosition to_pos = pos + kNeighbourOffsets[i];
+          auto maybe_tile = GetTopTileAt(to_pos);
+          if (maybe_tile.has_value()) {
+            out.emplace_back(Move{tile,
+                                  *maybe_tile,
                                   OppositeDirection(i)});
           }
         }
@@ -225,80 +223,107 @@ void HexBoard::GeneratePlacementMoves(std::vector<Move>& out, Player player, int
 }
 
 
-void HexBoard::GenerateMovesFor(std::vector<Move>& out, HiveTilePtr& tile, Player player) {
+void HexBoard::GenerateMovesFor(std::vector<Move>& out, const HivePosition& start_pos, BugType type, Player player) {
+  MaybeUpdateSlideCache();
+  MaybeUpdateArticulationPoints();
+  cache_valid_ = true;
+
   std::vector<HivePosition> positions;
-  switch (tile->GetBugType()) {
+  switch (type) {
     case BugType::kQueen:
-      GenerateValidSlides(positions, tile, 1);
+      GenerateValidSlides(positions, start_pos, 1);
       break;
 
     case BugType::kAnt:
-      GenerateValidSlides(positions, tile, -1);
+      GenerateValidSlides(positions, start_pos, -1);
       break;
 
     case BugType::kGrasshopper:
-      GenerateValidGrasshopperPositions(positions, tile);
+      GenerateValidGrasshopperPositions(positions, start_pos);
       break;
 
     case BugType::kSpider:
-      GenerateValidSlides(positions, tile, 3);
+      GenerateValidSlides(positions, start_pos, 3);
       break;
 
     case BugType::kBeetle:
-      GenerateValidClimbs(positions, tile);
-      GenerateValidSlides(positions, tile, 1);
+      GenerateValidSlides(positions, start_pos, 1);
+      GenerateValidClimbs(positions, start_pos);
       break;
 
     case BugType::kMosquito:
-      GenerateValidMosquitoPositions(positions, tile);
+      GenerateValidMosquitoPositions(positions, start_pos);
       break;
 
     case BugType::kLadybug:
-      GenerateValidLadybugPositions(positions, tile);
+      GenerateValidLadybugPositions(positions, start_pos);
       break;
 
     case BugType::kPillbug:
-      GenerateValidSlides(positions, tile, 1);
-      GenerateValidPillbugSpecials(positions, tile);
+      GenerateValidSlides(positions, start_pos, 1);
+
+      // pillbug special constructs its own moves
+      GenerateValidPillbugSpecials(out, start_pos);
       break;
   }
 
-  // turn each position into moves by finding neighbouring tiles as reference
-  for (auto& pos : positions) {
-    std::cout << pos << ", ";
-    for (uint8_t i = 0; i < Direction::kNumDirections; ++i) {
-      if (i == Direction::kAbove) {
-        continue;
-      }
+  // since we are generating Moves and not Placements, tile must already
+  // be in the position cache
+  HiveTilePtr& tile = position_cache_.at(start_pos);
 
-      HivePosition to_position = pos + kNeighbourOffsets[i];
-      if (position_cache_.contains(to_position)) {
-        out.emplace_back(Move{player,
-                              tile,
-                              position_cache_.at(to_position),
-                              OppositeDirection(i)});
+  // turn each position into moves by finding neighbouring tiles as reference
+  for (auto& to_pos : positions) {
+    //std::cout << to_pos << ", ";
+    if (to_pos.H() > 0) {
+      // only generate kAbove moves for on top the hive
+      out.emplace_back(Move{tile,
+                            *GetTileBelow(to_pos),
+                            Direction::kAbove});
+    } else {
+      // check for a valid reference tile in each direction
+      // for (auto& tile_ref : NeighbourReferenceTiles(to_pos)) {
+      //   if (tile != tile_ref.tile) {
+      //     out.emplace_back(Move{tile,
+      //                           tile_ref.tile,
+      //                           tile_ref.dir});
+      //   }
+      // }
+
+      for (uint8_t d = 0; d < Direction::kNumCardinalDirections; ++d) {
+        auto maybe_tile = GetTopTileAt(to_pos + kNeighbourOffsets[d]);
+        if (maybe_tile.has_value()) {
+          if (start_pos.H() > 0 && *maybe_tile == tile) {
+            out.emplace_back(Move{tile,
+                                  *GetTileBelow(start_pos),
+                                  OppositeDirection(d)});
+          } else if (*maybe_tile != tile) {
+            out.emplace_back(Move{tile,
+                                  *maybe_tile,
+                                  OppositeDirection(d)});
+          }
+        }
       }
     }
   }
-  std::cout << std::endl;
+  //std::cout << std::endl;
 }
 
 
-void HexBoard::GenerateValidSlides(std::vector<HivePosition>& out, HiveTilePtr& tile, int distance) {
-  // In order for a tile to slide in direction D, the following must hold true:
-  // 1) The tile must not be "pinned" (i.e. at an articulation point)
-  // 2) The tile must be on ground level, or sliding on top of another tile
-  // 3) The tile must be able to physically slide into the position without
-  //    hitting other tiles. That is, when sliding in direction D, exactly one
-  //    of the two adjacent positions (D-1) (D+1) must be empty to physically
-  //    move in, and the other position must occupied by another tile in order
-  //    to remain attached to the hive at all times (One-Hive rule)
-
-  MaybeUpdateSlideCache();
-  
-  if (tile->IsPinned()) {
+// In order for a tile to slide in direction D, the following must hold true:
+// 1) The tile must not be "pinned" (i.e. at an articulation point)
+// 2) The tile must be on ground level, or sliding on top of another tile
+// 3) The tile must be able to physically slide into the position without
+//    hitting other tiles. That is, when sliding in direction D, exactly one
+//    of the two adjacent positions (D-1) (D+1) must be empty to physically
+//    move in, and the other position must be occupied in order to remain
+//    attached to the hive at all times (One-Hive rule)
+void HexBoard::GenerateValidSlides(std::vector<HivePosition>& out, const HivePosition& start_pos, int distance) {
+  if (IsPinned(start_pos) || IsCovered(start_pos)) {
     return;
   }
+  
+  //HiveTilePtr& tile = position_cache_.at(start_pos);
+  auto maybe_tile = GetTopTileAt(start_pos);
   
   auto search = [&](auto& search, absl::flat_hash_set<HivePosition>& visited, HivePosition pos, Direction from, int dist) -> void {
     if (visited.contains(pos)) {
@@ -314,7 +339,7 @@ void HexBoard::GenerateValidSlides(std::vector<HivePosition>& out, HiveTilePtr& 
     }
 
     for (auto& slide : slidability_cache_[pos]) {
-      if (slide.ref_tile ==  tile || slide.dir == Direction::kAbove || slide.dir == from) {
+      if (slide.tile ==  maybe_tile || slide.dir == from) {
         continue;
       }
 
@@ -324,31 +349,64 @@ void HexBoard::GenerateValidSlides(std::vector<HivePosition>& out, HiveTilePtr& 
 
   // start search in the directions the slideability cache has already computed
   // TODO: MAKE WORK WITH kABOVE
-  HivePosition pos = tile->GetPosition();
-  std::cout << tile->ToUHP() << " has " << std::to_string(slidability_cache_[pos].size()) << " slidable positions:" << std::endl;
-  for (auto& slide : slidability_cache_[pos]) {
-    if (slide.dir == Direction::kAbove) {
-      continue;
-    }
-
+  //std::cout << tile->ToUHP() << " has " << std::to_string(slidability_cache_[pos].size()) << " slidable positions:" << std::endl;
+  for (auto& slide : slidability_cache_[start_pos]) {
     // need a fresh visited list for each starting direction
-    absl::flat_hash_set<HivePosition> v = {pos};
-    search(search, v, pos + kNeighbourOffsets[slide.dir], OppositeDirection(slide.dir), distance - 1);
+    absl::flat_hash_set<HivePosition> v = {start_pos};
+    v.reserve(player_influence_[kPlayerWhite].size() + player_influence_[kPlayerBlack].size() + played_tiles_.size());
+    search(search, v, start_pos + kNeighbourOffsets[slide.dir], OppositeDirection(slide.dir), distance - 1);
   }
 }
 
 
-void HexBoard::GenerateValidClimbs(std::vector<HivePosition>& out, HiveTilePtr& tile) {
+// A climb consists of a slide on top the hive laterally, with an optional
+// vertical movement, in any non-gated direction. This slide is less
+// restrictive than a ground-level slide as you do not require neighbours
+// to remain connected to the hive
+void HexBoard::GenerateValidClimbs(std::vector<HivePosition>& out, const HivePosition& start_pos) {
+  if (IsPinned(start_pos) || IsCovered(start_pos)) {
+    return;
+  }
+  
+  HivePosition ground_pos = {start_pos.Q(), start_pos.R(), 0};
 
+  // find the top tile, or an empty position, in each adjacent position
+  for (uint8_t d = 0; d < Direction::kNumCardinalDirections; ++d) {
+
+    // search for a tile from ground up
+    auto maybe_tile = GetTopTileAt(ground_pos + kNeighbourOffsets[d]);
+    if (maybe_tile.has_value()) {
+      HivePosition to_pos = (*maybe_tile)->GetPosition() + kNeighbourOffsets[Direction::kAbove];
+
+      // climbing up: check for a gate at the *target*'s height
+      if (to_pos.H() > start_pos.H() && !IsGated({start_pos.Q(), start_pos.R(), to_pos.H()}, static_cast<Direction>(d))) {
+        out.push_back(to_pos);
+      // climbing down or across: check for gate at *this* tile's height
+      } else if (to_pos.H() <= start_pos.H() && !IsGated(start_pos, static_cast<Direction>(d)) && !position_cache_.contains(to_pos)) {
+        out.push_back(to_pos);
+      }
+    } else {
+      HivePosition to_pos = ground_pos + kNeighbourOffsets[d];
+
+      // climbing down to empty space: check for a gate at *this* tile's height
+      if (to_pos.H() < start_pos.H() && !IsGated(start_pos, static_cast<Direction>(d)) && !position_cache_.contains(to_pos)) {
+        out.push_back(to_pos);
+      }
+    }
+  }
 }
 
 
-void HexBoard::GenerateValidGrasshopperPositions(std::vector<HivePosition>& out, HiveTilePtr& tile) {
+void HexBoard::GenerateValidGrasshopperPositions(std::vector<HivePosition>& out, const HivePosition& start_pos) {
+  if (IsPinned(start_pos) || IsCovered(start_pos)) {
+    return;
+  }
+
   // in each cardinal direction that contains a tile, jump over all tiles in
   // that direction until reaching an empty space to land
   for (uint8_t d = 0; d < Direction::kAbove; ++d) {
     bool found = false;
-    HivePosition to_test = tile->GetPosition() + kNeighbourOffsets[d];
+    HivePosition to_test = start_pos + kNeighbourOffsets[d];
     while (position_cache_.contains(to_test)) {
       to_test += kNeighbourOffsets[d];
       found = true;
@@ -361,33 +419,100 @@ void HexBoard::GenerateValidGrasshopperPositions(std::vector<HivePosition>& out,
 }
 
 
-void HexBoard::GenerateValidLadybugPositions(std::vector<HivePosition>& out, HiveTilePtr& tile) {
+// A lady bug moves in *exactly* 3 distinct steps: a climb onto the hive, a
+// slide or climb across the hive, and a climb down from the hive
+void HexBoard::GenerateValidLadybugPositions(std::vector<HivePosition>& out, const HivePosition& start_pos) {
+  if (IsPinned(start_pos) || IsCovered(start_pos)) {
+    return;
+  }
+  
+  std::vector<HivePosition> intermediates1;
+  std::vector<HivePosition> intermediates2;
+  std::vector<HivePosition> intermediates3;
 
-}
+  // intermediates1.reserve(player_influence_[0].size());
+  // intermediates2.reserve(player_influence_[0].size());
+  // intermediates3.reserve(player_influence_[0].size());
 
+  // step 1
+  GenerateValidClimbs(intermediates1, start_pos);
 
-void HexBoard::GenerateValidMosquitoPositions(std::vector<HivePosition>& out, HiveTilePtr& tile) {
+  // step 2
+  for (auto pos : intermediates1) {
+    GenerateValidClimbs(intermediates2, pos);
+  }
 
-}
-
-
-void HexBoard::GenerateValidPillbugSpecials(std::vector<HivePosition>& out, HiveTilePtr& tile) {
-
-}
-
-
-
-HiveTileList HexBoard::NeighboursOf(HiveTilePtr& tile, bool ignore_above) {
-  return NeighboursOf(tile->GetPosition(), ignore_above);
-}
-
-HiveTileList HexBoard::NeighboursOf(HivePosition pos, bool ignore_above) {
-  HiveTileList neighbours;
-  for (uint8_t i = 0; i < Direction::kNumDirections; ++i) {
-    if (ignore_above && i == Direction::kAbove) {
+  // step 3
+  for (auto pos : intermediates2) {
+    // ensure on top of the hive and not on top of the original tile
+    if (pos.H() == 0 || pos == start_pos + kNeighbourOffsets[Direction::kAbove]) {
       continue;
     }
 
+    GenerateValidClimbs(intermediates3, pos);
+  }
+
+  // dumb way to check for dupes?
+  //TODO absl::flat_hash_set<HivePosition> end_positions(intermediates3.begin(), intermediates3.end());
+  for (auto pos : absl::flat_hash_set<HivePosition>(intermediates3.begin(), intermediates3.end())) {
+    if (pos.H() == 0) {
+      out.push_back(pos);
+    }
+  }
+}
+
+
+void HexBoard::GenerateValidMosquitoPositions(std::vector<HivePosition>& out, const HivePosition& start_pos) {
+  // TODO: consider using Pillbug special (dont consider IsPinned)
+  if (IsCovered(start_pos)) {
+    return;
+  }
+
+
+}
+
+
+void HexBoard::GenerateValidPillbugSpecials(std::vector<Move>& out, const HivePosition& start_pos) {
+  // Pillbug can still perform its special when Pinned, unlike all other bugs
+  if (IsCovered(start_pos)) {
+    return;
+  }
+
+  std::vector<HiveTilePtr> valid_targets;
+  std::vector<HivePosition> valid_positions;
+
+  for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+    // ensure there is no "gate" blocking above for this direction
+    if (IsGated(start_pos + kNeighbourOffsets[Direction::kAbove], static_cast<Direction>(dir))) {
+      continue;
+    }
+
+    HivePosition to_test = start_pos + kNeighbourOffsets[dir];
+    if (position_cache_.contains(to_test)) {
+      // valid IFF the target tile is not: Pinned, Covered, Stunned, LastMoved
+      if (!IsPinned(to_test) && !IsCovered(to_test) && position_cache_.at(to_test) != LastMovedTile() && position_cache_.at(to_test) != LastStunnedTile()) {
+        valid_targets.push_back(position_cache_.at(to_test));
+      }
+    } else {
+      valid_positions.push_back(to_test);
+    }
+  }
+
+  for (auto& tile : valid_targets) {
+    for (auto pos : valid_positions) {
+      for (auto& tile_ref : NeighbourReferenceTiles(pos)) {
+        out.emplace_back(Move{tile,
+                              tile_ref.tile,
+                              tile_ref.dir});
+      }
+    }
+  }
+}
+
+
+HiveTileList HexBoard::NeighboursOf(HivePosition pos) {
+  HiveTileList neighbours;
+  for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
     HivePosition to_test = pos + kNeighbourOffsets[i];
     if (position_cache_.contains(to_test)) {
       neighbours.push_back(position_cache_.at(to_test));
@@ -404,6 +529,19 @@ void HexBoard::PlaceTile(HiveTilePtr& tile, HivePosition new_pos) {
   SPIEL_CHECK_TRUE(tile);
   SPIEL_CHECK_FALSE(tile->IsInPlay());
 
+  // IMPORTANT: if the reference tile was higher on the hive, the new_pos
+  // may need to "fall down" until it hits ground or another tile
+  int8_t new_height = new_pos.H();
+  while (new_height > 0) {
+    if (!position_cache_.contains({new_pos.Q(), new_pos.R(), new_height - 1})) {
+      new_height--;
+    } else {
+      break;
+    }
+  }
+
+  new_pos = {new_pos.Q(), new_pos.R(), new_height};
+
   // add tile to relevant containers
   played_tiles_.push_back(tile);
   position_cache_.insert({new_pos, tile});
@@ -416,7 +554,7 @@ void HexBoard::PlaceTile(HiveTilePtr& tile, HivePosition new_pos) {
 
 
 // TODO: Combine MoveTile and PlaceTile
-void HexBoard::MoveTile(HiveTilePtr& tile, HivePosition new_pos) {
+void HexBoard::MoveTile(HiveTilePtr& tile, HivePosition new_pos, Player player) {
   SPIEL_CHECK_TRUE(tile);
   SPIEL_CHECK_TRUE(tile->IsInPlay());
 
@@ -426,12 +564,31 @@ void HexBoard::MoveTile(HiveTilePtr& tile, HivePosition new_pos) {
     SpielFatalError("HexBoard::MoveTile() - Tile not found in position cache");
   }
 
+  // IMPORTANT: if the reference tile was higher on the hive, the new_pos
+  // may need to "fall down" until it hits ground or another tile
+  int8_t new_height = new_pos.H();
+  while (new_height > 0) {
+    if (!position_cache_.contains({new_pos.Q(), new_pos.R(), new_height - 1})) {
+      new_height--;
+    } else {
+      break;
+    }
+  }
+
+  new_pos = {new_pos.Q(), new_pos.R(), new_height};
+
+
   // replace old mapping with new position key
   handle.key() = new_pos;
   position_cache_.insert(std::move(handle));
   tile->SetPosition(new_pos);
+
+
+  // stun if moved on the other player's turn (which implies Pillbug special)
+  last_stunned_ = player != tile->GetPlayer() ? tile : nullptr;
   last_moved_ = tile;
   cache_valid_ = false;
+
   // update influence for the moved tile's player
   // potentially have to update both if the moved tile was part of a stack
   UpdateInfluence(tile->GetPlayer());
@@ -441,8 +598,20 @@ void HexBoard::MoveTile(HiveTilePtr& tile, HivePosition new_pos) {
 }
 
 
+// reset any turn-dependent variables
+void HexBoard::Pass() {
+  last_moved_ = nullptr;
+  last_stunned_ = nullptr;
+}
+
+
+
 const HiveTilePtr& HexBoard::LastMovedTile() const {
   return last_moved_;
+}
+
+const HiveTilePtr& HexBoard::LastStunnedTile() const {
+  return last_stunned_;
 }
 
 
@@ -457,29 +626,23 @@ bool HexBoard::IsInPlay(Player player, BugType type, int ordinal /*= -1*/) const
 }
 
 
-bool HexBoard::IsPinned(HiveTilePtr& tile) const {
-  return tile->IsPinned();
-}
-
-
 bool HexBoard::IsQueenSurrounded(Player player) {
   HiveTilePtr queen = GetTileFromUHP(player == kPlayerWhite ? "wQ" : "bQ");
-  return queen->IsInPlay() && NeighboursOf(queen, true).size() == 6;
+  return queen->IsInPlay() && NeighboursOf(queen->GetPosition()).size() == 6;
 }
 
 
-absl::optional<HiveTilePtr> HexBoard::GetTileAt(const HivePosition& pos, bool get_top_tile) {
+absl::optional<HiveTilePtr> HexBoard::GetTopTileAt(const HivePosition& pos) {
   auto it = position_cache_.find(pos);
+  int8_t height = 0;
+
   while (it != position_cache_.end()) {
-    if (!get_top_tile) {
-      return it->second;
-    }
-    
-    if (IsTopOfStack(it->second)) {
+    if (!IsCovered(it->second->GetPosition())) {
       return it->second;
     } else {
-      it = position_cache_.find({pos.Q(), pos.R(), pos.H() + 1});
+      it = position_cache_.find({pos.Q(), pos.R(), height});
     }
+    ++height;
   }
 
   return absl::nullopt;
@@ -526,21 +689,16 @@ HiveTilePtr& HexBoard::GetTileFromUHP(const std::string& uhp) {
 }
 
 
-HiveTile& HexBoard::GetTileAbove(const HiveTile& tile) const {
-  // TODO: insert return statement here
-}
-
-
 // IsGated verifies requirement (3) in GenerateValidSlides()
-bool HexBoard::IsGated(HivePosition pos, Direction d) const {
+bool HexBoard::IsGated(const HivePosition& pos, Direction d) const {
   bool clockwise = position_cache_.contains(pos + kNeighbourOffsets[ClockwiseDirection(d)]);
   bool counter_clockwise = position_cache_.contains(pos + kNeighbourOffsets[CounterClockwiseDirection(d)]);
-  return clockwise == counter_clockwise;
+  return pos.H() == 0 ? clockwise == counter_clockwise : clockwise && counter_clockwise;
 }
 
 
-bool HexBoard::IsTopOfStack(HiveTilePtr& tile) const {
-  return !position_cache_.contains(tile->GetPosition() + kNeighbourOffsets[Direction::kAbove]);
+bool HexBoard::IsCovered(const HivePosition& pos) const {
+  return position_cache_.contains(pos + kNeighbourOffsets[Direction::kAbove]);
 }
 
 
@@ -549,7 +707,7 @@ void HexBoard::UpdateInfluence(Player player) {
   player_influence_[player].clear();
   for (auto& tile : player_tiles_[player]) {
     // if a tile is covered, it has no influence
-    if (!IsTopOfStack(tile)) {
+    if (IsCovered(tile->GetPosition())) {
       continue;
     }
 
@@ -581,41 +739,24 @@ void HexBoard::MaybeUpdateSlideCache() {
   }
 
   absl::flat_hash_set<HivePosition> visited;
+  visited.reserve(player_influence_[kPlayerWhite].size() + player_influence_[kPlayerBlack].size() + played_tiles_.size());
   auto dfs = [&](auto& dfs, HivePosition pos, Direction to_ignore) -> void {
-    if (visited.contains(pos)) {
+    if (visited.contains(pos) || IsCovered(pos)) {
       return;
     }
-
     visited.insert(pos);
 
     // make sure we aren't calculating a position that is currently unreachable
-    // TODO: MAKE SURE THIS WORKS FOR kABOVE
-    HiveTileList my_neighbours = NeighboursOf(pos, true);
-    if (my_neighbours.size() == 0) {
+    HiveTileList my_neighbours = NeighboursOf(pos);
+    if ((pos.H() == 0 && my_neighbours.size() == 0) ||
+        (pos.H() > 0 && !position_cache_.contains(pos - kNeighbourOffsets[Direction::kAbove]))) {
       return;
     }
 
-    // std::cout << "neighbours of " << pos <<  ": ";
-    // for (auto& i : my_neighbours) {
-    //   std::cout << i->ToUHP() << ", ";
-    // }
-    // std::cout << std::endl;
-
-    // check each direction for slidability
-    for (uint8_t i = 0; i < Direction::kNumDirections; ++i) {
-      // can never slide "above"
-      if (i == Direction::kAbove) {
-        continue;
-      }
-
-      HivePosition to_test = pos + kNeighbourOffsets[i];
-      HiveTileList to_neighbours = NeighboursOf(to_test, true);
-
-      if (to_neighbours.size() == 0) {
-        continue;
-      }
-
+    // check each direction for slidability. Can never slide above/upwards
+    for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
       // can't slide into another tile
+      HivePosition to_test = pos + kNeighbourOffsets[i];
       if (position_cache_.contains(to_test)) {
         continue;
       }
@@ -626,10 +767,21 @@ void HexBoard::MaybeUpdateSlideCache() {
       }
 
       // if on top of the hive, there must also be a tile directly underneath
-      if (to_test.H() > 0 && !position_cache_.contains({to_test.Q(),
-                                                        to_test.R(),
-                                                        to_test.H() - 1})) {
-        continue;                                                
+      //TODO: this is redundant? already covered in ValidClimbs maybe?
+      if (to_test.H() > 0) {
+        auto it = position_cache_.find({to_test.Q(), to_test.R(), to_test.H() - 1});
+        if (it != position_cache_.end()) {
+          slidability_cache_[pos].push_back({it->second, static_cast<Direction>(i)});
+        }
+
+        // regardless of outcome, we are done
+        continue;
+      }
+
+      // must have at least one neighbour
+      HiveTileList to_neighbours = NeighboursOf(to_test);
+      if (to_test.H() > 0 && to_neighbours.size() == 0) {
+        continue;
       }
 
       // the reference tile for this slide is the neighbour of both positions
@@ -639,7 +791,7 @@ void HexBoard::MaybeUpdateSlideCache() {
 
         if (it != to_neighbours.end() && (*it)->GetPosition() != pos) {
           // if here, sliding around "tile" from "pos" in direction "i" is valid
-          slidability_cache_[pos].push_back({static_cast<Direction>(i), tile});
+          slidability_cache_[pos].push_back({tile, static_cast<Direction>(i)});
           found = true;
         }
       }
@@ -654,11 +806,10 @@ void HexBoard::MaybeUpdateSlideCache() {
         
     }
 
-
     // perform search for all neighbours
     // TODO: fix for kAbove
-    for (uint8_t i = 0; i < Direction::kNumDirections; ++i) {
-      if (i == to_ignore || i == Direction::kAbove) {
+    for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
+      if (i == to_ignore) {
         continue;
       }
 
@@ -668,38 +819,89 @@ void HexBoard::MaybeUpdateSlideCache() {
 
   // traverse across the hive starting at an arbitrary tile
   for (auto& tile : played_tiles_) {
-    dfs(dfs, tile->GetPosition(), Direction::kNumDirections);
+    dfs(dfs, tile->GetPosition(), Direction::kNumAllDirections);
   }
 
-  cache_valid_ = true;
-
-  std::cout << "\nSlide cache:" << std::endl;
-  std::cout << "  size: " << slidability_cache_.size() << std::endl;
-  for (auto& item : slidability_cache_) {
-    if (item.second.size() == 0) {
-      continue;
-    }
-    std::cout << item.first << ": [" << std::flush;
-    for (auto& slide : item.second) {
-      std::cout << std::to_string(slide.dir) << "->" << slide.ref_tile->ToUHP() << ", " << std::flush;
-    }
-    std::cout << "]\n" << std::endl;
-  }
+  // std::cout << "\nSlide cache:" << std::endl;
+  // std::cout << "  size: " << slidability_cache_.size() << std::endl;
+  // for (auto& item : slidability_cache_) {
+  //   if (item.second.size() == 0) {
+  //     continue;
+  //   }
+  //   std::cout << item.first << ": [" << std::flush;
+  //   for (auto& slide : item.second) {
+  //     std::cout << std::to_string(slide.dir) << "->" << slide.ref_tile->ToUHP() << ", " << std::flush;
+  //   }
+  //   std::cout << "]\n" << std::endl;
+  // }
 }
 
 
-absl::optional<HiveTilePtr> HexBoard::FindNeighbourTileRef(HivePosition& pos) {
-  for (int direction = 0; direction < Direction::kNumDirections; ++direction) {
-
+// Articulation points in a connected graph are vertices where, when removed,
+// separate the graph into multiple components that are no longer connected.
+// Tiles at an articulation point are considered "pinned" (and thus, can't be
+// moved) as it would separate the hive and invalidate the "One-Hive" rule
+// https://en.wikipedia.org/wiki/Biconnected_component
+// https://cp-algorithms.com/graph/cutpoints.html
+void HexBoard::MaybeUpdateArticulationPoints() {
+  if (cache_valid_) {
+    return;
   }
 
-  for (HiveOffset offset : kNeighbourOffsets) {
+  articulation_points_.clear();
+
+  int visit_order = 0;
+  absl::flat_hash_set<HivePosition> visited;
+  absl::flat_hash_map<HivePosition,int> entry_point;
+  absl::flat_hash_map<HivePosition,int> low_point;
+
+  auto dfs = [&](auto& dfs, HivePosition vertex, HivePosition parent, bool is_root) -> void {
+    visited.insert(vertex);
+    entry_point[vertex] = low_point[vertex] = visit_order;
+    ++visit_order;
+
+    int children = 0;
+    for (auto& to_tile : NeighboursOf(vertex)) {
+      HivePosition to_vertex = to_tile->GetPosition();
+      if (to_vertex == parent) {
+        continue;
+      }
+
+      if (visited.contains(to_vertex)) {
+        low_point[vertex] = std::min(low_point[vertex], entry_point[to_vertex]);
+      } else {
+        dfs(dfs, to_vertex, vertex, false);
+        ++children;
+        low_point[vertex] = std::min(low_point[vertex], low_point[to_vertex]);
+        if (low_point[to_vertex] >= entry_point[vertex] && !is_root) {
+          articulation_points_.insert(vertex);
+        }
+      }
+    }
+
+    if (is_root && children > 1) {
+      articulation_points_.insert(vertex);
+    }
+  };
+
+  // any arbitrary starting point would do, but the Queen is guaranteed to be
+  // in play when generating moves, and will never be above the hive
+  dfs(dfs, GetTileFromUHP("wQ")->GetPosition(), kNullPosition, true);
+}
 
 
-    
+// the tile(s) used as reference for a Move, from a top-down view.
+// tiles on the hive will also reference the tile underneath
+std::vector<HexBoard::TileReference> HexBoard::NeighbourReferenceTiles(HivePosition& pos) {
+  std::vector<HexBoard::TileReference> refs;
+  for (uint8_t d = 0; d < Direction::kNumCardinalDirections; ++d) {
+    auto maybe_tile = GetTopTileAt(pos + kNeighbourOffsets[d]);
+    if (maybe_tile.has_value()) {
+      refs.push_back({*maybe_tile, OppositeDirection(d)});
+    }
   }
 
-  return absl::nullopt;
+  return refs;
 }
 
 
