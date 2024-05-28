@@ -64,40 +64,40 @@ RegisterSingleTensorObserver single_tensor(kGameType.short_name);
 }  // namespace
 
 HiveState::HiveState(std::shared_ptr<const Game> game, int board_size) :
-  State(game), board_(new HexBoard(game, board_size, kNumStackableTiles)) {
+  State(game), board_(board_size, kNumStackableTiles) {
 
   // create a tile for each player + bug type + ordinal
   for (Player p = 0; p < kNumPlayers; ++p) {
     for (int ord = 1; ord <= BugTypeCount(BugType::kQueen); ++ord) {
-      board_->CreateTile(p, BugType::kQueen, ord);
+      Board().CreateTile(p, BugType::kQueen, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kAnt); ++ord) {
-      board_->CreateTile(p, BugType::kAnt, ord);
+      Board().CreateTile(p, BugType::kAnt, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kGrasshopper); ++ord) {
-      board_->CreateTile(p, BugType::kGrasshopper, ord);
+      Board().CreateTile(p, BugType::kGrasshopper, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kSpider); ++ord) {
-      board_->CreateTile(p, BugType::kSpider, ord);
+      Board().CreateTile(p, BugType::kSpider, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kBeetle); ++ord) {
-      board_->CreateTile(p, BugType::kBeetle, ord);
+      Board().CreateTile(p, BugType::kBeetle, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kLadybug); ++ord) {
-      board_->CreateTile(p, BugType::kLadybug, ord);
+      Board().CreateTile(p, BugType::kLadybug, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kMosquito); ++ord) {
-      board_->CreateTile(p, BugType::kMosquito, ord);
+      Board().CreateTile(p, BugType::kMosquito, ord);
     }
 
     for (int ord = 1; ord <= BugTypeCount(BugType::kPillbug); ++ord) {
-      board_->CreateTile(p, BugType::kPillbug, ord);
+      Board().CreateTile(p, BugType::kPillbug, ord);
     }
   }
 }
@@ -129,7 +129,7 @@ Action HiveState::StringToAction(Player player,
   /////////move.player = player;
 
   // first bug should always be valid
-  absl::optional<HiveTilePtr> bug1 = board_->GetTileFromUHP(bugs[0]);
+  absl::optional<HiveTilePtr> bug1 = Board().GetTileFromUHP(bugs[0]);
   if (bug1.has_value()) {
     move.from = bug1.value();
   } else {
@@ -186,7 +186,7 @@ Action HiveState::StringToAction(Player player,
     ordinal = bugs[1].at(ord_index) - '0';
   }
 
-  move.to = board_->GetTileFromUHP(bugs[1].substr(start_index, end_index - start_index + 1));
+  move.to = Board().GetTileFromUHP(bugs[1].substr(start_index, end_index - start_index + 1));
   // if (tile.has_value()) {
   //   move.to = tile.value();
   // } else {
@@ -240,21 +240,30 @@ Action HiveState::StringToAction(Player player,
 
 
 //   absl::string_view bug = absl::StripAsciiWhitespace(str);
-//   absl::optional<HiveTilePtr> x = board_->GetTileFromUHP(str);
+//   absl::optional<HiveTilePtr> x = Board().GetTileFromUHP(str);
 //   return x.value();
 // }
 
 
 
 std::vector<double> HiveState::Returns() const {
-  return {1, -1};
+  bool white_winner = WinConditionMet(kPlayerWhite);
+  bool black_winner = WinConditionMet(kPlayerBlack);
+
+  if (white_winner ^ black_winner) {
+    return {white_winner ? 1.f : -1.f, black_winner ? 1.f : -1.f};
+  }
+
+  return {0, 0};
 }
+
 
 std::string HiveState::InformationStateString(Player player) const {
   SPIEL_CHECK_GE(player, 0);
   SPIEL_CHECK_LT(player, num_players_);
   return HistoryString();
 }
+
 
 std::string HiveState::ObservationString(Player player) const {
   SPIEL_CHECK_GE(player, 0);
@@ -263,38 +272,95 @@ std::string HiveState::ObservationString(Player player) const {
 }
 
 
-// A 3d tensor, 3 player-relative one-hot 2d planes. The layers are: the
-// specified player, the other player, and empty.
-void HiveState::ObservationTensor(Player player,
-                        absl::Span<float> values) const {
+void HiveState::ObservationTensor(Player player, absl::Span<float> values) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
+  static int bug_idx = 0;
+  static int articulation_idx = 16;
+  static int placeable_idx = 18;
+  static int covered_idx = 20;
+
+  // Treat values as a 3d-tensor, where each feature plane has square dimensions
+  // (radius * 2 + 1) x (radius * 2 + 1), and contains player-relative one-hot
+  // encodings of the current board state
+  TensorView<3> view(values, {game_->ObservationTensorShape()[0], Board().SquareDimensions(), Board().SquareDimensions()}, true);
+
+  int plane_idx = 0;
+  Player opposing_player = OtherPlayer(player);
+
+  // populate all planes that reference a tile in play
+  for (auto& tile : Board().GetPlayedTiles()) {
+    HivePosition pos = tile->GetPosition();
+    std::array<int, 2> indices = AxialToTensorIndex(pos);
+    bool is_opposing = tile->GetPlayer() == opposing_player;
+
+    // bug type planes
+    plane_idx = bug_idx + static_cast<int>(tile->GetBugType()) + (is_opposing ? static_cast<int>(BugType::kNumBugTypes) : 0);
+    view[{plane_idx, indices[0], indices[1]}] = 1.0f;
+
+    // "pinned" plane
+    plane_idx = articulation_idx + (is_opposing ? 1 : 0);
+    if (Board().IsPinned(pos)) {
+      view[{plane_idx, indices[0], indices[1]}] = 1.0f;
+    }
+
+    // "covered" plane
+    plane_idx = covered_idx + (is_opposing ? 1 : 0);
+    if (Board().IsCovered(pos)) {
+      view[{plane_idx, indices[0], indices[1]}] = 1.0f;
+    }
+  }
+
+  // to store the axial grid in a 2d array, we simply need to apply a linear
+  // vector transformation with size "radius" to each axial coordinate
+  int radius = Board().Radius();
+  for (int r = -radius; r <= radius; ++r) {
+    for (int q = -radius; q <= radius; ++q) {
+      HivePosition pos = {q, r, 0};
+      std::array<int, 2> indices = AxialToTensorIndex(pos);
+
+      // player and opponent's placeable positions
+      if (Board().IsPlaceable(player, pos)) {
+        view[{placeable_idx, indices[0], indices[1]}] = 1.0f;
+      } else if (Board().IsPlaceable(opposing_player, pos)) {
+        view[{placeable_idx + 1, indices[0], indices[1]}] = 1.0f;
+      }
+    }
+  }
+    
+
   return;
 }
 
+
 std::unique_ptr<State> HiveState::Clone() const {
-  return std::unique_ptr<State>(new HiveState(game_));
+  return std::unique_ptr<State>(new HiveState(*this));
 }
+
 
 std::vector<Action> HiveState::LegalActions() const {
   std::vector<Move> moves;
-  std::vector<Action> actions;
+  std::set<Action> unique_actions;
 
-  board_->GenerateAllMoves(moves, current_player_, move_number_);
-  actions.reserve(moves.size());
-  std::transform(moves.begin(), moves.end(), std::back_inserter(actions), [this](Move& m) {
+  Board().GenerateAllMoves(moves, current_player_, move_number_);
+  std::transform(moves.begin(), moves.end(), std::inserter(unique_actions, unique_actions.end()), [this](Move& m) {
     return MoveToAction(m); 
   });
 
+  std::vector<Action> actions(unique_actions.begin(), unique_actions.end());
 
-/////// TODO REMOVE THIS ////////
-  actions.push_back(NumDistinctActions() - 1);
-/////// FOR TESTING ONLY ////////
+  // if a player has no legal actions, then they must pass
+  if (actions.size() == 0) {
+    actions.push_back(NumDistinctActions() - 1);
+  }
 
-  std::sort(actions.begin(), actions.end());
   return actions;
 }
 
+
 std::string HiveState::Serialize() const {
-  return "";
+  return absl::StrJoin({std::string(kDefaultUHPGameType), ProgressString(), TurnString(), MovesString()}, ";");
 }
 
 
@@ -306,7 +372,7 @@ Move HiveState::ActionToMove(Action action) const {
     return m;
   }
 
-  int num_tiles = board_->NumUniqueTiles();
+  int num_tiles = Board().NumUniqueTiles();
 
   int direction = action % Direction::kNumAllDirections;
   int to = (action / Direction::kNumAllDirections) % num_tiles;
@@ -318,58 +384,58 @@ Move HiveState::ActionToMove(Action action) const {
   if (from == to && direction == kAbove) {
     to_tile = nullptr;
   } else {
-    to_tile = board_->DecodeTile(to);
+    to_tile = Board().DecodeTile(to);
   }
 
-  return Move{board_->DecodeTile(from),
+  return Move{Board().DecodeTile(from),
               to_tile,
               static_cast<Direction>(direction)};
 }
+
 
 Action HiveState::MoveToAction(Move& move) const {
   if (move.is_pass) {
     return NumDistinctActions() - 1;
   }
 
-  int from = board_->EncodeTile(move.from);
-  int num_tiles = board_->NumUniqueTiles();
+  int from = Board().EncodeTile(move.from);
+  int num_tiles = Board().NumUniqueTiles();
 
   // if there is no second bug "to", then we have a special case for first turn
   if (!move.to) {
-    return (from * (num_tiles * Direction::kNumAllDirections)) + (Direction::kNumAllDirections * from) + Direction::kAbove;
+    return (from * (num_tiles * Direction::kNumAllDirections)) + (from * Direction::kNumAllDirections) + Direction::kAbove;
   }
 
-  int to = board_->EncodeTile(move.to);
+  int to = Board().EncodeTile(move.to);
 
   // as if indexing into a 3d array with indices [from][to][direction]
-  return (from * (num_tiles * Direction::kNumAllDirections)) + (Direction::kNumAllDirections * to) + move.direction;
+  return (from * (num_tiles * Direction::kNumAllDirections)) + (to * Direction::kNumAllDirections) + move.direction;
 }
 
 
- std::string HiveState::PrintBoard(HiveTilePtr tile_to_move) const {
+std::string HiveState::PrintBoard(HiveTilePtr tile_to_move) const {
   static std::string white = "\033[38;5;223m";
   static std::string red = "\033[1;31m";
   static std::string reset = "\033[1;39m";
-  static int n = board_->Radius();
   static float indent_size = 2.5f;
 
-  std::string string;
+  std::string string = "\n";
+  string.reserve(Board().SquareDimensions() * Board().SquareDimensions() * 5);
   std::vector<HiveTilePtr> top_tiles;
-  // *5 for the number of chars at each grid index
-  string.reserve((n * 2 + 1) * (n * 2 + 1) * 5);
 
   std::vector<Move> moves;
   std::vector<HivePosition> positions;
   if (tile_to_move != nullptr) {
-    board_->GenerateMovesFor(moves, tile_to_move->GetPosition(), tile_to_move->GetBugType(), current_player_);
+    Board().GenerateMovesFor(moves, tile_to_move->GetPosition(), tile_to_move->GetBugType(), current_player_);
   }
 
   for (auto move : moves) {
     positions.push_back(move.EndPosition());
- }
+  }
 
-  // loop over Q, R, to generate a hexagon
-  for (int r = -n; r <= n; ++r) {
+  // loop over valid Q, R, to generate a hexagon
+  int radius = Board().Radius();
+  for (int r = -radius; r <= radius; ++r) {
     // indent based on which row we are on (r). Intentionally use float
     // to take the floor for odd numbered rows
     int num_spaces = std::abs(r) * indent_size;
@@ -378,8 +444,8 @@ Action HiveState::MoveToAction(Move& move) const {
     }
 
     // print each tile on row r by iterating valid q indices
-    for (int q = std::max(-n, -r - n); q <= std::min(n, -r + n); ++q) {
-      absl::optional<HiveTilePtr> tile = board_->GetTopTileAt({q, r, 0});
+    for (int q = std::max(-radius, -r - radius); q <= std::min(radius, -r + radius); ++q) {
+      absl::optional<HiveTilePtr> tile = Board().GetTopTileAt({q, r, 0});
 
       // print the tile's UHP representation, or "-" otherwise, centered around
       // a padded 5 char long string
@@ -392,40 +458,40 @@ Action HiveState::MoveToAction(Move& move) const {
           uhp = absl::StrCat("^", uhp);
           top_tiles.push_back(*tile);
         }
+
         int left_padding = (5 - uhp.size()) / 2;
         int right_padding = (5 - uhp.size()) - left_padding;
         for (int i = 0; i < left_padding; ++i) { oss << ' '; }
+
         oss << uhp;
 
-        if (*tile == board_->LastStunnedTile()) {
+        if (*tile == Board().LastStunnedTile()) {
           oss << "~";
           --right_padding;
-        } else if (*tile == board_->LastMovedTile()) {
+        } else if (*tile == Board().LastMovedTile()) {
           oss << "*";
           --right_padding;
         }
 
         for (int i = 0; i < right_padding; ++i) { oss << ' '; }
 
-
         // or for fun:
         //oss << (*tile)->ToUnicode();
       } else {
-        oss << reset;
-
-        oss << ((positions.size() > 0 && std::find(positions.begin(), positions.end(), HivePosition(q, r, 0)) != positions.end()) ? "  X  " : "  -  ");
-
-        // if (movable_positions.size() > 0) {
-        //   auto it = std::find(movable_positions.begin(), movable_positions.end(), HivePosition(q, r, 0));
-        //   if (it !=  movable_positions.end()) {
-        //     oss << "  O  ";
-        //   } else {
-        //     oss << "  -  ";
-        //   }
-        // } else { 
-        //   oss << "  -  ";
-        // }
+        if (Board().LastMovedFrom() == HivePosition(q, r, 0) && Board().LastMovedTile()) {
+          if (Board().LastMovedTile()->GetPlayer() == kPlayerWhite) {
+            oss << white;
+          } else {
+            oss << red;
+          }
+          oss << "  *  ";
+          oss << reset;
+        } else {
+          oss << reset;
+          oss << ((positions.size() > 0 && std::find(positions.begin(), positions.end(), HivePosition(q, r, 0)) != positions.end()) ? "  X  " : "  -  ");
+        }
       }
+      oss << reset;
       absl::StrAppend(&string, oss.str());
     }
     absl::StrAppend(&string, "\n\n");
@@ -435,7 +501,7 @@ Action HiveState::MoveToAction(Move& move) const {
   for (auto& tile : top_tiles) {
     HivePosition pos = tile->GetPosition();
     absl::StrAppend(&string, tile->ToUHP());
-    while (absl::optional<HiveTilePtr> below = board_->GetTileBelow(pos)) {
+    while (absl::optional<HiveTilePtr> below = Board().GetTileBelow(pos)) {
       absl::StrAppend(&string, " > ", (*below)->ToUHP());
       pos += {0, 0, -1};
     }
@@ -443,23 +509,97 @@ Action HiveState::MoveToAction(Move& move) const {
     absl::StrAppend(&string, "\n");
   }
 
-
   return string;
+}
+
+
+std::string HiveState::ProgressString() const {
+  if (move_number_ == 0) {
+    return kUHPNotStarted;
+  }
+
+  if (move_number_ > game_->MaxGameLength()) {
+    return kUHPDraw;
+  }
+
+  bool white_winner = WinConditionMet(kPlayerWhite);
+  bool black_winner = WinConditionMet(kPlayerBlack);
+  if (white_winner ^ black_winner) {
+    return white_winner ? kUHPWhiteWins : kUHPBlackWins;
+  } else if (white_winner && black_winner) {
+    return kUHPDraw;
+  }
+
+  return kUHPInProgress;
+}
+
+
+std::string HiveState::TurnString() const {
+
+  return absl::StrFormat("%s[%d]",
+                          current_player_ == kPlayerWhite ? "White" : "Black",
+                          (move_number_ + 2) / 2);
+}
+
+
+std::string HiveState::MovesString() const {
+  return absl::StrJoin(ActionsToStrings(*this, History()), ";");
+}
+
+
+void HiveState::CreateBugTypePlane(BugType type, Player player, absl::Span<float>::iterator& it) {
+  for (uint8_t q = 0; q < Board().SquareDimensions(); ++q) {
+    for (uint8_t r = 0; r < Board().SquareDimensions(); ++r) {
+      auto tile = Board().GetTopTileAt({q, r, 0});
+      if (tile.has_value() && (*tile)->GetBugType() == type && (*tile)->GetPlayer() == player) {
+        *it++ = 1.0f;
+      } else {
+        *it++ = 0.0f;
+      }
+    }
+  }
+}
+
+
+void HiveState::CreatePlacementPlane(Player player, absl::Span<float>::iterator& it) {
+  for (uint8_t q = 0; q < Board().SquareDimensions(); ++q) {
+    for (uint8_t r = 0; r < Board().SquareDimensions(); ++r) {
+      *it++ = Board().IsPlaceable(player, {q, r, 0}) ? 1.0f : 0.0f;
+    }
+  }
+}
+
+
+void HiveState::CreateArticulationPlane(Player player, absl::Span<float>::iterator& it) {
+  for (uint8_t q = 0; q < Board().SquareDimensions(); ++q) {
+    for (uint8_t r = 0; r < Board().SquareDimensions(); ++r) {
+      *it++ = Board().IsPlaceable(player, {q, r, 0}) ? 1.0f : 0.0f;
+    }
+  }
+}
+
+
+void HiveState::CreateCoveredPlane(Player player, absl::Span<float>::iterator& it) {
+  for (uint8_t q = 0; q < Board().SquareDimensions(); ++q) {
+    for (uint8_t r = 0; r < Board().SquareDimensions(); ++r) {
+      *it++ = Board().IsPlaceable(player, {q, r, 0}) ? 1.0f : 0.0f;
+    }
+  }
 }
 
 
 // we assume the move is valid at this point and simply apply it
 void HiveState::DoApplyAction(Action action) {
   if (action == NumDistinctActions() - 1) {
-    board_->Pass();
+    Board().Pass();
   } else {
     Move move = ActionToMove(action);
     HivePosition target_pos = move.to ? move.EndPosition() : kOriginPosition;
 
     if (move.from && move.from->IsInPlay()) {
-      board_->MoveTile(move.from, target_pos, current_player_);
+      Board().MoveTile(move.from, target_pos, current_player_);
     } else {
-      board_->PlaceTile(move.from, target_pos);
+      Board().PlaceTile(move.from, target_pos);
     }
   }
 
@@ -480,7 +620,8 @@ void HiveState::DoApplyAction(Action action) {
 
 HiveGame::HiveGame(const GameParameters& params)
   : Game(kGameType, params),
-    kBoardRadius(kDefaultBoardRadius) {
+    kBoardRadius(kDefaultBoardRadius),
+    kUHPGameType(kDefaultUHPGameType) {
 
 }
 

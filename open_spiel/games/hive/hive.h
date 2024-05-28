@@ -41,6 +41,13 @@ inline constexpr int kDefaultBoardRadius = 8; // Assumes a regular Hexagonal lay
 inline constexpr int kNumStackableTiles = 6; // number of beetles/mosquitos
 inline constexpr int kNumNeighbours = 6; // ???????????????????????????????
 
+inline constexpr const char* kDefaultUHPGameType = "Base+PLM";
+inline constexpr const char* kUHPNotStarted = "NotStarted";
+inline constexpr const char* kUHPInProgress = "InProgress";
+inline constexpr const char* kUHPWhiteWins = "WhiteWins";
+inline constexpr const char* kUHPBlackWins = "BlackWins";
+inline constexpr const char* kUHPDraw = "Draw";
+
 
 //typedef std::array<int, 2> Direction__;
 //struct Direction { int8_t q_offset{}; int8_t r_offset{}; int8_t h_offset{}; };
@@ -78,7 +85,7 @@ class HiveState : public State {
     }
   };
 
-  HiveState(std::shared_ptr<const Game> game, int board_size = kDefaultBoardRadius);
+  explicit HiveState(std::shared_ptr<const Game> game, int board_size = kDefaultBoardRadius);
 
   HiveState(const HiveState&) = default;
 
@@ -93,15 +100,23 @@ class HiveState : public State {
   Action StringToAction(Player player,
                         const std::string& move_str) const override;
   bool IsTerminal() const override {
-    return board_->IsQueenSurrounded(kPlayerWhite) ||
-           board_->IsQueenSurrounded(kPlayerBlack); 
+    return WinConditionMet(kPlayerWhite) ||
+           WinConditionMet(kPlayerBlack) ||
+           MoveNumber() >= game_->MaxGameLength(); 
   }
   std::vector<double> Returns() const override;
   std::string InformationStateString(Player player) const override;
   std::string ObservationString(Player player) const override;
 
-  // A 3d tensor, 3 player-relative one-hot 2d planes. The layers are: the
-  // specified player, the other player, and empty.
+  // A 3d-tensor where each binary 2d-plane represents the following features:
+  // (0-7):  current player's bugs in play for each of the 8 bug types
+  // (8-15): opposing player's bugs in play for each of the 8 bug types
+  // (16):   current player's "pinned" bugs
+  // (17):   opposing player's "pinned" bugs
+  // (18):   current player's valid placement positions
+  // (19):   opposing player's valid placement positions
+  // (20):   current player's "covered" bugs
+  // (21):   opposing player's "covered" bugs
   void ObservationTensor(Player player,
                          absl::Span<float> values) const override;
   std::unique_ptr<State> Clone() const override;
@@ -112,11 +127,19 @@ class HiveState : public State {
   std::string Serialize() const override;
 
 
-  // custom
+  // non-overrides
+  HexBoard& Board() { return board_; }
+  const HexBoard& Board() const { return board_; }
+
   Move ActionToMove(Action action) const;
   Action MoveToAction(Move& move) const;
   std::string PrintBoard(HiveTilePtr tile_to_move = nullptr) const;
-  //HiveTilePtr& StringToTile(const std::string& str) const;
+  std::string ProgressString() const;
+  std::string TurnString() const;
+  std::string MovesString() const;
+  inline bool WinConditionMet(Player player) const {
+    return Board().IsOpposingQueenSurrounded(player);
+  }
 
 
  protected:
@@ -125,11 +148,21 @@ class HiveState : public State {
  private:
 
   inline void BugPlayed(BugType type) { ++type_played_counts_.at(type); }
+  void CreateBugTypePlane(BugType type, Player player, absl::Span<float>::iterator& it);
+  void CreatePlacementPlane(Player player, absl::Span<float>::iterator& it);
+  void CreateArticulationPlane(Player player, absl::Span<float>::iterator& it);
+  void CreateCoveredPlane(Player player, absl::Span<float>::iterator& it);
+
+  // an axial coordinate at position (q, r) is stored at index [r][q] after
+  // translating the axial coordinate by the length of the radius
+  inline std::array<int, 2> AxialToTensorIndex(HivePosition pos) const {
+    return {pos.R() + Board().Radius(), pos.Q() + Board().Radius()};
+  }
 
   Player current_player_ = kPlayerWhite;
   // TODO CHANGE BACK
 public:
-  std::unique_ptr<HexBoard> board_;
+  HexBoard board_;
 private:
   // TODO CHANGE BACK
   std::unordered_map<BugType,uint8_t> type_played_counts_ = {
@@ -162,16 +195,17 @@ class HiveGame : public Game {
   absl::optional<double> UtilitySum() const override { return 0; }
   double MaxUtility() const override { return 1; }
   std::vector<int> ObservationTensorShape() const override {
-    return { 16 /*num bug types x num_players */ + 2 /* player influence plane */ + 1 /* articulation points */,
+    return { 16 /*num bug types x num_players */ + 2 /* articulation point planes */ + 2 /* placeability planes */ + 2 /* covered planes */,
     2*kBoardRadius + 1, /*dimensions of a sq board from hex board is: (2*radius + 1)*/
     2*kBoardRadius + 1};
   }
-  int MaxGameLength() const override { return 250; }
+  int MaxGameLength() const override { return 1000; }
 
   std::unique_ptr<State> DeserializeState(const std::string& str) const override;
   
  private:
   const int kBoardRadius;
+  const std::string kUHPGameType;
 };
 
 

@@ -24,7 +24,12 @@ namespace {
 
 namespace testing = open_spiel::testing;
 
+void MyTests() {
+
+}
+
 void BasicHiveTests() {
+  testing::RandomSimTest(*LoadGame("hive"), 10, false);
 
   std::cout << "**Begin Test**" << std::endl;
   std::shared_ptr<const Game> game = LoadGame("hive(board_size=8)");
@@ -106,4 +111,7 @@ void BasicHiveTests() {
 }  // namespace hive
 }  // namespace open_spiel
 
-int main(int argc, char** argv) { open_spiel::hive::BasicHiveTests(); }
+int main(int argc, char** argv) {
+  open_spiel::hive::BasicHiveTests();
+  open_spiel::hive::MyTests();
+}
