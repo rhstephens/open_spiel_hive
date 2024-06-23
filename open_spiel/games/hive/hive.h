@@ -1,4 +1,4 @@
-// Copyright 2019 DeepMind Technologies Limited
+// Copyright 2024 DeepMind Technologies Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,10 +37,7 @@ namespace open_spiel {
 namespace hive {
 
 inline constexpr int kNumPlayers = 2;
-inline constexpr int kDefaultBoardRadius = 8; // Assumes a regular Hexagonal layout
-inline constexpr int kNumStackableTiles = 6; // number of beetles/mosquitos
-inline constexpr int kNumNeighbours = 6; // ???????????????????????????????
-
+inline constexpr int kDefaultNumBugTypes = 5;
 inline constexpr const char* kDefaultUHPGameType = "Base+PLM";
 inline constexpr const char* kUHPNotStarted = "NotStarted";
 inline constexpr const char* kUHPInProgress = "InProgress";
@@ -49,46 +46,21 @@ inline constexpr const char* kUHPBlackWins = "BlackWins";
 inline constexpr const char* kUHPDraw = "Draw";
 
 
-//typedef std::array<int, 2> Direction__;
-//struct Direction { int8_t q_offset{}; int8_t r_offset{}; int8_t h_offset{}; };
+struct ExpansionInfo {
+  bool uses_mosquito;
+  bool uses_ladybug;
+  bool uses_pillbug;
+};
 
-
-// List of neighbors of a cell: [cell][direction]
-//typedef std::vector<std::array<Move, kNumNeighbours>> NeighborList;
 
 // State of an in-play game.
 class HiveState : public State {
  public:
 
-  // returns the total amount of tiles each player starts with per BugType
-  // (may need to modify if allowing less expansions than the full game...?)
-  static constexpr uint8_t BugTypeCount(BugType type) {
-    switch (type) {
-      case BugType::kQueen:
-        return 1;
-      case BugType::kAnt:
-        return 3;
-      case BugType::kGrasshopper:
-        return 3;
-      case BugType::kSpider:
-        return 2;
-      case BugType::kBeetle:
-        return 2;
-      case BugType::kLadybug:
-        return 1;
-      case BugType::kMosquito:
-        return 1;
-      case BugType::kPillbug:
-        return 1;
-      default:
-        return 0;
-    }
-  };
-
-  explicit HiveState(std::shared_ptr<const Game> game, int board_size = kDefaultBoardRadius);
+  explicit HiveState(std::shared_ptr<const Game> game, int board_size = kDefaultBoardRadius, ExpansionInfo expansions = {}, int num_bug_types = kDefaultNumBugTypes);
 
   HiveState(const HiveState&) = default;
-
+  HiveState& operator=(const HiveState&) = default;
 
   // overrides
 
@@ -102,7 +74,8 @@ class HiveState : public State {
   bool IsTerminal() const override {
     return WinConditionMet(kPlayerWhite) ||
            WinConditionMet(kPlayerBlack) ||
-           MoveNumber() >= game_->MaxGameLength(); 
+           MoveNumber() >= game_->MaxGameLength() ||
+           force_terminal_; 
   }
   std::vector<double> Returns() const override;
   std::string InformationStateString(Player player) const override;
@@ -123,7 +96,7 @@ class HiveState : public State {
   std::vector<Action> LegalActions() const override;
 
   // LINK TO UHP DEFINITION OF:
-  // GameTypeString;GameStateString;TurnString;MoveString1;MoveString2;MoveStringN
+  // GameTypeString;GameStateString;TurnString;MoveString1;...;MoveStringN
   std::string Serialize() const override;
 
 
@@ -133,21 +106,27 @@ class HiveState : public State {
 
   Move ActionToMove(Action action) const;
   Action MoveToAction(Move& move) const;
-  std::string PrintBoard(HiveTilePtr tile_to_move = nullptr) const;
+  Action PassAction() const { return NumDistinctActions() - 1; }
+  std::string PrintBoard(NewHiveTile tile_to_move = NewHiveTile::kNoneTile) const;
   std::string ProgressString() const;
   std::string TurnString() const;
   std::string MovesString() const;
   inline bool WinConditionMet(Player player) const {
-    return Board().IsOpposingQueenSurrounded(player);
+    return Board().IsQueenSurrounded(OtherColour(PlayerToColour(player)));
   }
+  bool BugTypeIsEnabled(BugType type) const;
+
+  /// TODO REMOVE
+  absl::flat_hash_set<HivePosition>& GetPinned() { return board_.articulation_points_; }
 
 
  protected:
   void DoApplyAction(Action action) override;
 
  private:
+  // allows any combination of expansion pieces to be used for the observation
+  size_t BugTypeToTensorIndex(BugType type) const;
 
-  inline void BugPlayed(BugType type) { ++type_played_counts_.at(type); }
   void CreateBugTypePlane(BugType type, Player player, absl::Span<float>::iterator& it);
   void CreatePlacementPlane(Player player, absl::Span<float>::iterator& it);
   void CreateArticulationPlane(Player player, absl::Span<float>::iterator& it);
@@ -160,52 +139,47 @@ class HiveState : public State {
   }
 
   Player current_player_ = kPlayerWhite;
-  // TODO CHANGE BACK
-public:
   HexBoard board_;
-private:
-  // TODO CHANGE BACK
-  std::unordered_map<BugType,uint8_t> type_played_counts_ = {
-    {BugType::kQueen,       0},
-    {BugType::kAnt,         0},
-    {BugType::kGrasshopper, 0},
-    {BugType::kSpider,      0},
-    {BugType::kBeetle,      0},
-    {BugType::kMosquito,    0},
-    {BugType::kLadybug,     0},
-    {BugType::kPillbug,     0}
-  };
+  ExpansionInfo expansions_;
+  int num_bug_types_;
+  bool force_terminal_;
+
+
 };
 
 
 // Game object.
 class HiveGame : public Game {
  public:
-  explicit HiveGame(const GameParameters& params);
 
+  explicit HiveGame(const GameParameters& params);
   
   std::array<int,3> ActionsShape() const { return {7,28,28}; }
+  // TODO: change action-space depending on expansions used
   int NumDistinctActions() const override { return 5488 + 1; } // +1 for pass
   inline std::unique_ptr<State> NewInitialState() const override {
-    return std::unique_ptr<State>(
-        new HiveState(shared_from_this(), 8));
+    return std::make_unique<HiveState>(shared_from_this(), board_radius_, expansions_, num_bug_types_);
   }
   int NumPlayers() const override { return kNumPlayers; }
   double MinUtility() const override { return -1; }
   absl::optional<double> UtilitySum() const override { return 0; }
   double MaxUtility() const override { return 1; }
-  std::vector<int> ObservationTensorShape() const override {
-    return { 16 /*num bug types x num_players */ + 2 /* articulation point planes */ + 2 /* placeability planes */ + 2 /* covered planes */,
-    2*kBoardRadius + 1, /*dimensions of a sq board from hex board is: (2*radius + 1)*/
-    2*kBoardRadius + 1};
-  }
-  int MaxGameLength() const override { return 1000; }
 
+  // TODO: change observation tensor depending on expansions used
+  std::vector<int> ObservationTensorShape() const override {
+    return { num_bug_types_ * kNumPlayers /*num bug types x num players */ + 2 /* articulation point planes */ + 2 /* placeability planes */ + 2 /* covered planes */,
+    2 * board_radius_ + 1, /*dimensions of a sq board from hex board is: (2*radius + 1)*/
+    2 * board_radius_ + 1};
+  }
+
+  int MaxGameLength() const override { return 1000; }
   std::unique_ptr<State> DeserializeState(const std::string& str) const override;
   
  private:
-  const int kBoardRadius;
-  const std::string kUHPGameType;
+  int board_radius_;
+  int num_bug_types_;
+  ExpansionInfo expansions_;
+
 };
 
 
