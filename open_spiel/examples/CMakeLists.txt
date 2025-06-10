@@ -9,6 +9,8 @@ add_executable(universal_poker_mccfr_acpc_gamedef_example universal_poker_mccfr_
 add_test(universal_poker_mccfr_acpc_gamedef_example_test universal_poker_mccfr_acpc_gamedef_example)
 endif()
 
+add_executable(hive_uhp_example hive_uhp_example.cc ${OPEN_SPIEL_OBJECTS})
+
 add_executable(cfr_multi_equilibria_example cfr_multi_equilibria_example.cc
                ${OPEN_SPIEL_OBJECTS})
 

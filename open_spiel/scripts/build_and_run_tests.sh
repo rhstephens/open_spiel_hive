@@ -45,6 +45,7 @@ ArgsLibAddArg build_only bool false 'Builds only the library, without running te
 ArgsLibAddArg test_only string "all" 'Build and runs the tests matching this string (use "all" to run all tests)'
 ArgsLibAddArg build_dir string "build" 'Location of the build directory.'
 ArgsLibAddArg num_threads int -1 'Number of threads to use when paralellizing build / tests. (Defaults to 4*<number of CPUs>)'
+ArgsLibAddArg target string "Testing" 'Testing/Release/Debug. The default is "Testing".'
 ArgsLibParse $@
 
 function die() {
@@ -174,6 +175,8 @@ function print_skipping_tests {
   echo -e "\033[32m*** Skipping to run tests.\e[0m"
 }
 
+TARGET="$ARG_target"
+
 # Build / install everything and run tests (C++, Python, optionally Julia).
 if [[ $ARG_build_with_pip == "true" ]]; then
   ${PYBIN} -m pip install .
@@ -196,7 +199,7 @@ else
   cmake -DPython3_EXECUTABLE=${PYBIN} \
         -DCMAKE_CXX_COMPILER=${CXX}                  \
         -DCMAKE_PREFIX_PATH=${LIBCXXWRAP_JULIA_DIR}  \
-        -DBUILD_TYPE=Testing                         \
+        -DBUILD_TYPE=${TARGET}                         \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
         ../open_spiel
 

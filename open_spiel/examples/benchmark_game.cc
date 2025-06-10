@@ -29,7 +29,12 @@ ABSL_FLAG(bool, verbose, false,
 
 namespace open_spiel {
 
-int RandomSimulation(std::mt19937* rng, const Game& game, bool verbose) {
+struct SimulationResult {
+  int game_length;
+  std::vector<double> returns;
+};
+
+SimulationResult RandomSimulation(std::mt19937* rng, const Game& game, bool verbose) {
   std::unique_ptr<State> state = game.NewInitialState();
 
   if (verbose) {
@@ -112,14 +117,14 @@ int RandomSimulation(std::mt19937* rng, const Game& game, bool verbose) {
       std::cout << "Observation: " << obs << std::endl;
     }
   }
-  return game_length;
+  return { game_length, state->Returns() };
 }
 
 // Perform num_sims random simulations of the specified game, and output the
 // time taken.
 void RandomSimBenchmark(const std::string& game_def, int num_sims,
                         bool verbose) {
-  std::mt19937 rng;
+  std::mt19937 rng(absl::ToUnixMillis(absl::Now()));
   std::cout << absl::StrFormat("Benchmark: game: %s, num_sims: %d. ", game_def,
                                num_sims);
 
@@ -127,16 +132,27 @@ void RandomSimBenchmark(const std::string& game_def, int num_sims,
 
   absl::Time start = absl::Now();
   int num_moves = 0;
+  int white_wins = 0;
+  int black_wins = 0;
+  int draws = 0;
   for (int sim = 0; sim < num_sims; ++sim) {
-    num_moves += RandomSimulation(&rng, *game, verbose);
+    SimulationResult res = RandomSimulation(&rng, *game, verbose);
+    num_moves += res.game_length;
+    if (res.returns[0] > 0) {
+      white_wins++;
+    } else if (res.returns[0] < 0) {
+      black_wins++;
+    } else {
+      draws++;
+    }
   }
   absl::Time end = absl::Now();
   double seconds = absl::ToDoubleSeconds(end - start);
 
   std::cout << absl::StrFormat(
-                   "Finished %d moves in %.1f ms: %.1f sim/s, %.1f moves/s",
+                   "Finished %d moves in %.1f ms: %.1f sim/s, %.1f moves/s, white wins: %d, black wins: %d, draws: %d",
                    num_moves, seconds * 1000, num_sims / seconds,
-                   num_moves / seconds)
+                   num_moves / seconds, white_wins, black_wins, draws)
             << std::endl;
 }
 
