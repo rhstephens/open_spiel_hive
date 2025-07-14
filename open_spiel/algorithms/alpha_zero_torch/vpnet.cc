@@ -156,7 +156,7 @@ std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
       torch::empty({inference_batch_size, flat_input_size_}, torch_device_);
   torch::Tensor torch_inf_legal_mask = torch::full(
       {inference_batch_size, num_actions_}, false,
-      torch::TensorOptions().dtype(torch::kByte).device(torch_device_));
+      torch::TensorOptions().dtype(torch::kBool).device(torch_device_));
 
   for (int batch = 0; batch < inference_batch_size; ++batch) {
     // Copy legal mask(s) to a Torch tensor.
@@ -208,7 +208,7 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
       torch::empty({training_batch_size, flat_input_size_}, torch_device_);
   torch::Tensor torch_train_legal_mask = torch::full(
       {training_batch_size, num_actions_}, false,
-      torch::TensorOptions().dtype(torch::kByte).device(torch_device_));
+      torch::TensorOptions().dtype(torch::kBool).device(torch_device_));
   torch::Tensor torch_policy_targets =
       torch::zeros({training_batch_size, num_actions_}, torch_device_);
   torch::Tensor torch_value_targets =

@@ -40,6 +40,7 @@
 #include "open_spiel/algorithms/alpha_zero_torch/vpevaluator.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
+#include "open_spiel/games/hive/hive.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/utils/circular_buffer.h"
@@ -210,6 +211,60 @@ void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
     }
   }
   logger->Print("Got a quit.");
+}
+
+// thread that generates supervised training data from expert games
+void imitator(const open_spiel::Game& game, const AlphaZeroConfig& config,
+              ThreadedQueue<Trajectory>* trajectory_queue, StopToken* stop) {
+  std::unique_ptr<Logger> logger = std::make_unique<FileLogger>(config.path, "imitator");
+
+  int successes = 0;
+  int failures = 0;
+  std::string dataset_path = config.imitation_dataset_path;
+  std::vector<std::string> game_strings = absl::StrSplit(file::ReadContentsFromFile(dataset_path, "r"), '\n');
+
+  for (int i = 0; i < game_strings.size() && !stop->StopRequested(); ++i) {
+    Trajectory trajectory;
+    const std::string& game_string = game_strings[i];
+    std::unique_ptr<open_spiel::State> end_state = game.DeserializeState(game_string);
+    std::unique_ptr<open_spiel::State> state = game.NewInitialState();
+
+    const std::vector<State::PlayerAction>& actions = end_state->FullHistory();
+    for (State::PlayerAction pair : actions) {
+      // we trust the returns from the supervised game's end state
+      trajectory.returns = end_state->Returns(); 
+
+      trajectory.states.emplace_back(Trajectory::State{
+        state->ObservationTensor(),
+        pair.player,
+        state->LegalActions(),
+        pair.action,
+        {{pair.action, 1.0f}}, // one-hot with the expert's action as 1.0f
+        end_state->Returns()[pair.player]
+      });
+
+      // advance to the next state
+      state->ApplyActionWithLegalityCheck(pair.action);
+    }
+
+    if (!trajectory_queue->Push(trajectory)) {
+      logger->Print("Failed to push a trajectory.");
+      ++failures;
+    } else {
+      ++successes;
+    }
+  }
+
+  if (stop->StopRequested()) {
+    logger->Print("Got a quit.");
+  } else {
+    logger->Print("Finished training dataset.");
+    stop->Stop();
+  }
+
+  logger->Print(absl::StrCat("Created ", std::to_string(successes),
+                             " trajectories, with ", std::to_string(failures),
+                             " failures."));
 }
 
 class EvalResults {
@@ -499,6 +554,111 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   }
 }
 
+bool AlphaZeroPreTrain(AlphaZeroConfig config, bool continue_after/*= false*/) {
+  std::cout << "Pre-Training model from dataset: " << "expert_games.txt" << std::endl;
+
+  std::shared_ptr<const open_spiel::Game> game =
+    open_spiel::LoadGame(config.game);
+
+  // create a model
+  // std::cout << config.graph_def << std::endl;
+  SPIEL_CHECK_TRUE(CreateGraphDef(
+      *game, config.learning_rate, config.weight_decay, config.path,
+      config.graph_def, config.nn_model, config.nn_width, config.nn_depth));
+
+  DeviceManager device_manager;
+  for (const absl::string_view& device : absl::StrSplit(config.devices, ',')) {
+    device_manager.AddDevice(
+        VPNetModel(*game, config.path, config.graph_def, std::string(device)));
+    // hack, todo remove
+    break;
+  }
+
+  if (device_manager.Count() == 0) {
+    std::cerr << "No devices specified?" << std::endl;
+    return false;
+  }
+
+  StartInfo start_info = {/*start_time=*/absl::Now(),
+                          /*start_step=*/1,
+                          /*model_checkpoint_step=*/0,
+                          /*total_trajectories=*/0};
+
+  device_manager.Get(0)->SaveCheckpoint(start_info.model_checkpoint_step);
+  device_manager.Get(0)->LoadCheckpoint(start_info.model_checkpoint_step);
+
+  std::string dataset_path = absl::StrCat(config.path, "/", "expert_games.txt");
+  std::vector<std::string> game_strings = absl::StrSplit(file::ReadContentsFromFile(dataset_path, "r"), '\n');
+
+  std::vector<VPNetModel::TrainInputs> inputs;
+  inputs.reserve(config.train_batch_size);
+  VPNetModel::LossInfo losses;
+  for (std::string game_string : game_strings) {
+    std::unique_ptr<open_spiel::State> end_state = game->DeserializeState(game_string);
+    std::unique_ptr<open_spiel::State> state = game->NewInitialState();
+
+    std::vector<std::string> actions = absl::StrSplit(game_string, ';');
+    // first 3 elements are headers
+    actions.erase(actions.begin(), actions.begin() + 3);
+    size_t game_size = 0;
+    for (std::string action : actions) {
+      // // one-hot with the expert's action as 1.0
+      // open_spiel::ActionsAndProbs expert_policy = 
+      //   {{state->StringToAction(action), 1.0f}};
+
+      // game_trajectory.states.push_back(Trajectory::State{});
+
+      inputs.push_back(VPNetModel::TrainInputs{
+        state->LegalActions(),
+        state->ObservationTensor(),
+        {{state->StringToAction(action), 1.0f}},
+        end_state->Returns()[state->CurrentPlayer()]
+      });
+
+      state->ApplyActionWithLegalityCheck(state->StringToAction(action));
+
+      game_size += ((sizeof(Action) * state->LegalActions().capacity()) +
+                 (sizeof(float) * game->ObservationTensorSize()) + 
+                 (sizeof(std::pair<Action, double>)) +
+                 (sizeof(double)));
+    }
+
+    if (inputs.size() >= config.train_batch_size) {
+      std::cout << "Learning from " << inputs.size() << " states." << std::endl;
+
+      {  // Extra scope to return the device for use for inference asap.
+        DeviceManager::DeviceLoan learn_model =
+            device_manager.Get(config.train_batch_size, 0);
+
+        // Let the device manager know that the first device is now
+        // off-limits for inference and should only be used for learning
+        // (if config.explicit_learning == true).
+        device_manager.SetLearning(config.explicit_learning);
+
+        // Learn from them.
+        losses += learn_model->Learn(inputs);
+        inputs.clear();
+
+        // The device manager can now once again use the first device for
+        // inference (if it could not before).
+        device_manager.SetLearning(false);
+      }
+
+      // todo remove
+      break;
+    }
+
+    // TODO CHANGE FOR TESTING ONLY
+    std::cout << "From a given game, we got " << std::to_string(actions.size()) 
+      << " state observations, taking up " << std::to_string(game_size / (1024.0 * 1024.0)) << "MiB" << std::endl;
+  }
+
+  absl::PrintF("Losses: policy: %.4f, value: %.4f, l2: %.4f, sum: %.4f\n",
+            losses.Policy(), losses.Value(), losses.L2(), losses.Total());
+
+  return true;
+}
+
 bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
   std::shared_ptr<const open_spiel::Game> game =
       open_spiel::LoadGame(config.game);
@@ -605,10 +765,18 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
 
   std::vector<Thread> actors;
   actors.reserve(config.actors);
-  for (int i = 0; i < config.actors; ++i) {
-    actors.emplace_back(
-        [&, i]() { actor(*game, config, i, &trajectory_queue, eval, stop); });
+  if (!config.imitation_dataset_path.empty()) {
+    SPIEL_CHECK_FALSE(resuming);
+
+    // only 1 thread needed for imitation trajectory generation
+    actors.emplace_back([&]() { imitator(*game, config, &trajectory_queue, stop); });
+  } else {
+    for (int i = 0; i < config.actors; ++i) {
+      actors.emplace_back(
+          [&, i]() { actor(*game, config, i, &trajectory_queue, eval, stop); });
+    }
   }
+  
   std::vector<Thread> evaluators;
   evaluators.reserve(config.evaluators);
   for (int i = 0; i < config.evaluators; ++i) {

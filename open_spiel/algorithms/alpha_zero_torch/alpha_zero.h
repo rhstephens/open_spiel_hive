@@ -30,6 +30,7 @@ namespace torch_az {
 struct AlphaZeroConfig {
   std::string game;
   std::string path;
+  std::string imitation_dataset_path;
   std::string graph_def;
   std::string nn_model;
   int nn_width;
@@ -66,6 +67,7 @@ struct AlphaZeroConfig {
     return json::Object({
         {"game", game},
         {"path", path},
+        {"imitation_dataset_path", imitation_dataset_path},
         {"graph_def", graph_def},
         {"nn_model", nn_model},
         {"nn_width", nn_width},
@@ -100,6 +102,7 @@ struct AlphaZeroConfig {
   void FromJson(const json::Object& config_json) {
     game = config_json.at("game").GetString();
     path = config_json.at("path").GetString();
+    imitation_dataset_path = config_json.at("imitation_dataset_path").GetString();
     graph_def = config_json.at("graph_def").GetString();
     nn_model = config_json.at("nn_model").GetString();
     nn_width = config_json.at("nn_width").GetInt();
@@ -131,6 +134,7 @@ struct AlphaZeroConfig {
   }
 };
 
+bool AlphaZeroPreTrain(AlphaZeroConfig config, bool continue_after = false);
 bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming);
 
 }  // namespace torch_az

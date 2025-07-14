@@ -22,6 +22,7 @@
 #include "open_spiel/abseil-cpp/absl/strings/ascii.h"
 #include "open_spiel/abseil-cpp/absl/strings/numbers.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_join.h"
+#include "open_spiel/games/hive/hive.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 
@@ -72,20 +73,15 @@ void ConsolePlayTest(
   SPIEL_CHECK_NE(type.chance_mode, GameType::ChanceMode::kSampledStochastic);
   SPIEL_CHECK_NE(type.dynamics, GameType::Dynamics::kSimultaneous);
 
-  std::unique_ptr<State> state;
-  if (start_state != nullptr) {
-    state = start_state->Clone();
-  } else {
-    state = game.NewInitialState();
-    if (start_history != nullptr) {
-      for (Action action : *start_history) {
-        state->ApplyAction(action);
-      }
+  std::unique_ptr<hive::HiveState> state;
+  state.reset(dynamic_cast<hive::HiveState*>(game.NewInitialState().release()));
+  if (start_history != nullptr) {
+    for (Action action : *start_history) {
+      state->ApplyAction(action);
     }
   }
 
   bool applied_action = true;
-  std::unique_ptr<State> new_state;
 
   while (true) {
     if (applied_action) {
@@ -117,19 +113,53 @@ void ConsolePlayTest(
       if (line.empty()) {
         PrintHelpMenu();
       } else if (line == "#b") {
-        Action last_action = state->History().back();
-        new_state = game.NewInitialState();
-        std::vector<Action> history = state->History();
-        for (int i = 0; i < history.size() - 1; ++i) {
-          new_state->ApplyAction(history[i]);
-        }
-        state = std::move(new_state);
-        std::cout << "Popped action: " << last_action << std::endl;
-        applied_action = true;
+        // Action last_action = state->History().back();
+        // new_state = game.NewInitialState();
+        // std::vector<Action> history = state->History();
+        // for (int i = 0; i < history.size() - 1; ++i) {
+        //   new_state->ApplyAction(history[i]);
+        // }
+        // state = std::move(new_state);
+        // std::cout << "Popped action: " << last_action << std::endl;
+        // applied_action = true;
       } else if (line == "#q") {
         return;
       } else if (ParseCommand(line, game, state.get(), legal_actions)) {
         // Do nothing, was already handled.
+      } else if (line == "#nb") {
+        // print neighbours
+        for (auto tile : state->Board().GetPlayedTiles()) {
+          std::cout << "Neighbours of " << tile.ToUHP() << ": ";
+          for (auto nb : state->Board().GetNeighboursOf(state->Board().GetPositionOf(tile))) {
+            if (nb.HasValue()) {
+             std::cout << nb.ToUHP() << " ";
+            } else {
+              std::cout << " - ";
+            }
+          }
+          std::cout << std::endl;
+        }
+
+      } else if (line == "#p") {
+        std::cout << state->ToString() << std::endl;
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+        
+      } else if (line == "#") {
+      
       } else {
         Action action;
         bool valid_integer = absl::SimpleAtoi(line, &action);

@@ -143,12 +143,12 @@ class HivePosition {
 
   std::array<HivePosition, Direction::kNumCardinalDirections> Neighbours()
       const {
-    return {{{static_cast<int8_t>(q_ + 1), static_cast<int8_t>(r_ - 1)},
-             {static_cast<int8_t>(q_ + 1), static_cast<int8_t>(r_)},
-             {static_cast<int8_t>(q_), static_cast<int8_t>(r_ + 1)},
-             {static_cast<int8_t>(q_ - 1), static_cast<int8_t>(r_ + 1)},
-             {static_cast<int8_t>(q_ - 1), static_cast<int8_t>(r_)},
-             {static_cast<int8_t>(q_), static_cast<int8_t>(r_ - 1)}}};
+    return {{{(q_ + 1), (r_ - 1)},
+             {(q_ + 1), (r_)},
+             {(q_), (r_ + 1)},
+             {(q_ - 1), (r_ + 1)},
+             {(q_ - 1), (r_)},
+             {(q_), (r_ - 1)}}};
   }
 
   HivePosition NeighbourAt(Direction dir) const;
@@ -164,7 +164,6 @@ class HivePosition {
   int8_t h_;
 };
 
-inline constexpr int kMaxTileCount = 28;
 inline constexpr int kMaxBoardRadius = 14;
 inline constexpr int kDefaultBoardRadius = 8;
 inline constexpr std::array<int, static_cast<int>(BugType::kNumBugTypes)>
@@ -287,6 +286,8 @@ class HiveTile {
       case Colour::kBlack:
         return {bQ,  bA1, bA2, bA3, bG1, bG2, bG3,
                 bS1, bS2, bB1, bB2, bM,  bL,  bP};
+      default:
+        return {};
     }
   }
 
@@ -515,7 +516,14 @@ struct Move {
 
   std::string ToUHP();
   bool IsPass() const { return !from.HasValue(); }
+
+  bool operator==(Move other) const {
+    return from == other.from && to == other.to && direction == other.direction;
+  }
 };
+
+using NeighbourList = std::array<HiveTile, kNumCardinalDirections>;
+
 
 // HiveBoard
 //
@@ -562,11 +570,22 @@ struct Move {
 //
 class HiveBoard {
  public:
+  // TODO: REMOVE
+
+  bool has_recentered_ = false;
+
+
+
+
+
+
+
   // Creates a regular hexagonal board with given radius from the center
-  HiveBoard(int board_radius, ExpansionInfo expansions);
+  HiveBoard(int board_radius, ExpansionInfo expansions, bool fixed_orientation);
 
   int Radius() const { return hex_radius_; }
-  int SquareDimensions() const { return Radius() * 2 + 1; }
+  int SquareDimensions() const { return square_dims_; }
+  size_t BoardSize() const { return board_size_; }
 
   // Axial position (Q,R) is stored at the 2d-index:
   //   grid_[R + Radius()][Q + Radius()]
@@ -579,6 +598,7 @@ class HiveBoard {
   HiveTile GetTopTileAt(HivePosition pos) const;
   HiveTile GetTileBelow(HivePosition pos) const;
   const std::vector<HiveTile>& GetPlayedTiles() const { return played_tiles_; }
+  const NeighbourList& GetNeighboursOf(HivePosition pos) const;
   std::vector<HiveTile> NeighboursOf(
       HivePosition pos, HivePosition to_ignore = kNullPosition) const;
   HivePosition GetPositionOf(HiveTile tile) const {
@@ -598,7 +618,7 @@ class HiveBoard {
   bool IsConnected(HivePosition pos, HivePosition to_ignore) const;
   bool IsCovered(HivePosition pos) const;
   bool IsCovered(HiveTile tile) const;
-  bool IsOutOfBounds(HivePosition pos) const;
+  bool IsInBounds(HivePosition pos) const;
   bool IsPinned(HivePosition pos) const;
   bool IsPinned(HiveTile tile) const;
   bool IsPlaceable(Colour c, HivePosition pos) const;
@@ -615,9 +635,6 @@ class HiveBoard {
                         BugType acting_type, Colour to_move) const;
 
  private:
-  // moves all tiles closer to the center relative to the distance of each axis
-  bool RecenterBoard(HivePosition new_pos);
-
   // creates moves where a player can place an unplayed-tile from hand
   void GeneratePlacementMoves(std::vector<Move>* out, Colour to_move,
                               int move_number) const;
@@ -630,24 +647,35 @@ class HiveBoard {
   //    one of the two adjacent positions (D-1) (D+1) must be empty to
   //    physically move in, and the other position must be occupied in order
   //    to remain attached to the hive at all times (One-Hive rule)
-  void GenerateValidSlides(absl::flat_hash_set<HivePosition>* out,
-                           HiveTile tile, HivePosition pos, int distance) const;
+  void GenerateExactValidSlides(std::vector<HivePosition>* out,
+                                HiveTile tile, HivePosition pos,
+                                int distance) const;
+
+  // Generating all slides (i.e. Ant moves) is calculated differently for perf
+  void GenerateAllValidSlides(std::vector<HivePosition>* out,
+                                HiveTile tile, HivePosition pos) const;
 
   // A climb consists of a slide on top the hive laterally, with an optional
   // vertical movement, in any non-gated direction. This slide is less
   // restrictive than a ground-level slide as you do not require neighbours
   // to remain connected to the hive
-  void GenerateValidClimbs(absl::flat_hash_set<HivePosition>* out,
+  void GenerateValidClimbs(std::vector<HivePosition>* out,
                            HiveTile tile, HivePosition pos) const;
 
-  void GenerateValidGrasshopperPositions(absl::flat_hash_set<HivePosition>* out,
+  void GenerateValidGrasshopperPositions(std::vector<HivePosition>* out,
                                          HiveTile tile, HivePosition pos) const;
-  void GenerateValidLadybugPositions(absl::flat_hash_set<HivePosition>* out,
+  void GenerateValidLadybugPositions(std::vector<HivePosition>* out,
                                      HiveTile tile, HivePosition pos) const;
   void GenerateValidMosquitoPositions(std::vector<Move>* out, HiveTile tile,
                                       HivePosition pos, Colour to_move) const;
   void GenerateValidPillbugSpecials(std::vector<Move>* out, HiveTile tile,
                                     HivePosition pos) const;
+
+  void BoardUpdated(HivePosition old_pos, HivePosition new_pos);
+  void UpdateNeighbours(HivePosition old_pos, HivePosition new_pos);
+
+  // moves all tiles closer to the center relative to the distance of each axis
+  bool RecenterBoard(HivePosition new_pos);
 
   // Articulation points in a connected graph are vertices where, when removed,
   // separate the graph into multiple components that are no longer connected.
@@ -656,24 +684,27 @@ class HiveBoard {
   // https://en.wikipedia.org/wiki/Biconnected_component
   // https://cp-algorithms.com/graph/cutpoints.html
   void UpdateArticulationPoints();
-  void UpdateInfluence(Colour col);
 
   int hex_radius_;
+  int square_dims_;
+  size_t board_size_;
+  bool fixed_orientation_;
   ExpansionInfo expansions_;
 
+  // all computed once between moves to avoid redundant re-calcs and allocations
   std::vector<HiveTile> tile_grid_;
   std::vector<HiveTile> played_tiles_;
-  std::array<HivePosition, kMaxTileCount> tile_positions_;
+  std::vector<NeighbourList> neighbours_grid_;
+  std::array<bool, HiveTile::kNumTiles> pinned_tiles_;
+  std::array<HivePosition, HiveTile::kNumTiles> tile_positions_;
 
   // there are max 6 tiles that can climb on the hive to cover a tile
   std::array<HiveTile, 7> covered_tiles_;
-  absl::flat_hash_set<HivePosition> articulation_points_;
-
-  // contains the positions surrounding played tiles. Used for placement rules
-  std::array<absl::flat_hash_set<HivePosition>, 2> colour_influence_;
 
   HiveTile last_moved_;
   HivePosition last_moved_from_;
+
+  mutable std::vector<bool> visited_slides_;
 };
 
 }  // namespace hive

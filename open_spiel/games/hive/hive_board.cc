@@ -20,21 +20,29 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+//#include <queue>
 #include <string>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/container/flat_hash_map.h"
 #include "open_spiel/abseil-cpp/absl/container/flat_hash_set.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_join.h"
 #include "open_spiel/spiel_utils.h"
 
 namespace open_spiel {
 namespace hive {
 
-HiveBoard::HiveBoard(int board_radius, ExpansionInfo expansions)
+HiveBoard::HiveBoard(int board_radius, ExpansionInfo expansions,
+                     bool fixed_orientation)
     : hex_radius_(std::min(board_radius, kMaxBoardRadius)),
       expansions_(expansions),
-      tile_grid_(SquareDimensions() * SquareDimensions()) {}
+      fixed_orientation_(fixed_orientation),
+      square_dims_(2 * Radius() + 1),
+      board_size_(square_dims_ * square_dims_),
+      tile_grid_(board_size_),
+      visited_slides_(board_size_, false),
+      neighbours_grid_(board_size_) {}
 
 void HiveBoard::GenerateAllMoves(std::vector<Move>* out_vec, Colour to_move,
                                  int move_number) const {
@@ -56,7 +64,7 @@ void HiveBoard::GeneratePlacementMoves(std::vector<Move>* out, Colour to_move,
   // move 0: white must play a (non-queen) tile at the origin
   if (move_number == 0) {
     for (auto tile : HiveTile::GetTilesForColour(to_move)) {
-      if (tile.GetBugType() == BugType::kQueen) {
+      if (tile.GetBugType() == BugType::kQueen || tile.GetOrdinal() > 1) {
         continue;
       }
 
@@ -73,7 +81,7 @@ void HiveBoard::GeneratePlacementMoves(std::vector<Move>* out, Colour to_move,
     // this is the only time placing a tile next to an opponent's is allowed
   } else if (move_number == 1) {
     for (auto tile : HiveTile::GetTilesForColour(to_move)) {
-      if (tile.GetBugType() == BugType::kQueen) {
+      if (tile.GetBugType() == BugType::kQueen || tile.GetOrdinal() > 1) {
         continue;
       }
 
@@ -82,6 +90,12 @@ void HiveBoard::GeneratePlacementMoves(std::vector<Move>* out, Colour to_move,
       }
 
       for (int i = 0; i < Direction::kNumCardinalDirections; ++i) {
+        // a fixed starting orientation allows for the simplification of the
+        // game's opening, reducing the branching factor five-fold
+        if (fixed_orientation_ && static_cast<Direction>(i) != Direction::kE) {
+          continue;
+        }
+
         out->emplace_back(
             Move{tile, played_tiles_.front(), static_cast<Direction>(i)});
       }
@@ -93,44 +107,110 @@ void HiveBoard::GeneratePlacementMoves(std::vector<Move>* out, Colour to_move,
     bool queen_placed =
         move_number >= 8 ||
         IsInPlay(to_move == Colour::kWhite ? HiveTile::wQ : HiveTile::bQ);
-    for (auto tile : HiveTile::GetTilesForColour(to_move)) {
-      if (!expansions_.IsBugTypeEnabled(tile.GetBugType())) {
+
+    // for (auto ref_tile : played_tiles_) {
+    //   if (ref_tile.GetColour() != to_move || IsCovered(ref_tile)) {
+    //     continue;
+    //   }
+
+    //   // check the neighbours of every tile of our colour in play for placement
+    //   for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+    //     HivePosition to_test = GetPositionOf(ref_tile) + kNeighbourOffsets[dir];
+    //     if (IsPlaceable(to_move, to_test)) {
+    //       // once here, we have a valid location to place, so generate Moves
+    //       for (auto tile_to_play : HiveTile::GetTilesForColour(to_move)) {
+    //         if (IsInPlay(tile_to_play)) {
+    //           continue;
+    //         }
+
+    //         if ((move_number == 6 || move_number == 7) && !queen_placed &&
+    //              tile_to_play.GetBugType() != BugType::kQueen) {
+    //           continue;
+    //         }
+
+    //         out->emplace_back(Move{tile_to_play, ref_tile, OppositeDirection(dir)});
+    //       }
+    //     }
+    //   }
+    // }
+
+    for (auto ref_tile : played_tiles_) {
+      if (ref_tile.GetColour() != to_move) {
         continue;
       }
 
-      if (IsInPlay(tile)) {
-        continue;
-      }
+      for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+        HivePosition to_test = GetPositionOf(ref_tile) + kNeighbourOffsets[dir];
+        if (IsPlaceable(to_move, to_test)) {
+          for (auto tile_to_play : HiveTile::GetTilesForColour(to_move)) {
+            if (!expansions_.IsBugTypeEnabled(tile_to_play.GetBugType()) ||
+                IsInPlay(tile_to_play)) {
+              continue;
+            }
 
-      // Queen *must* be played by each player's 4th turn
-      if ((move_number == 6 || move_number == 7) && !queen_placed &&
-          tile.GetBugType() != BugType::kQueen) {
-        continue;
-      }
+            if ((move_number == 6 || move_number == 7) && !queen_placed &&
+                tile_to_play.GetBugType() != BugType::kQueen) {
+              continue;
+            }
 
-      // check all influence positions for validity
-      for (auto pos : colour_influence_[static_cast<int>(to_move)]) {
-        if (GetTopTileAt(pos).HasValue()) {
-          continue;
-        }
+            // check if previous tile ordinal has been played
+            if (tile_to_play.GetOrdinal() != 1 &&
+              !IsInPlay(to_move, tile_to_play.GetBugType(), tile_to_play.GetOrdinal() - 1)) {
+                continue;
+            }
 
-        // skip - other player's tile is next to this spot
-        if (colour_influence_[static_cast<int>(OtherColour(to_move))].contains(
-                pos)) {
-          continue;
-        }
-
-        // for completeness, any neighbouring tile can be used as the reference.
-        // would be nice to have an alternative action space to limit this down
-        for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
-          HivePosition to_pos = pos + kNeighbourOffsets[i];
-          HiveTile neighbour = GetTopTileAt(to_pos);
-          if (neighbour.HasValue()) {
-            out->emplace_back(Move{tile, neighbour, OppositeDirection(i)});
+            out->emplace_back(Move{tile_to_play, ref_tile, static_cast<Direction>(dir)});
           }
         }
       }
     }
+
+
+
+    // for (auto tile : HiveTile::GetTilesForColour(to_move)) {
+    //   if (!expansions_.IsBugTypeEnabled(tile.GetBugType())) {
+    //     continue;
+    //   }
+
+    //   if (IsInPlay(tile)) {
+    //     continue;
+    //   }
+
+    //   // Queen *must* be played by each player's 4th turn
+      // if ((move_number == 6 || move_number == 7) && !queen_placed &&
+      //     tile.GetBugType() != BugType::kQueen) {
+      //   continue;
+      // }
+
+    //   // 
+    //   for (auto tile : HiveTile::GetTilesForColour(to_move))
+    //     for (auto nb : neighbours_grid_[]) {
+
+    //     }
+
+    //   // check all influence positions for validity
+    //   for (auto pos : colour_influence_[static_cast<int>(to_move)]) {
+    //     if (GetTopTileAt(pos).HasValue()) {
+    //       continue;
+    //     }
+
+    //     // skip - other player's tile is next to this spot
+    //     if (colour_influence_[static_cast<int>(OtherColour(to_move))].contains(
+    //             pos)) {
+    //       continue;
+    //     }
+
+    //     // for completeness, any neighbouring tile can be used as the reference.
+    //     // would be nice to have an alternative action space to limit this down
+    //     for (uint8_t i = 0; i < Direction::kNumCardinalDirections; ++i) {
+    //       HivePosition to_pos = pos + kNeighbourOffsets[i];
+    //       HiveTile neighbour = GetTopTileAt(to_pos);
+    //       if (neighbour.HasValue()) {
+    //         out->emplace_back(Move{tile, neighbour, OppositeDirection(i)});
+    //       }
+    //     }
+    //   }
+    // }
   }
 }
 
@@ -139,16 +219,17 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
   SPIEL_DCHECK_TRUE(expansions_.IsBugTypeEnabled(acting_type));
 
   HivePosition start_pos = tile_positions_[tile];
-  absl::flat_hash_set<HivePosition> positions;
+  std::vector<HivePosition> positions;
+  //positions.reserve(Direction::kNumCardinalDirections);
 
   // using an explicitly provided acting BugType to account for the Mosquito
   switch (acting_type) {
     case BugType::kQueen:
-      GenerateValidSlides(&positions, tile, start_pos, 1);
+      GenerateExactValidSlides(&positions, tile, start_pos, 1);
       break;
 
     case BugType::kAnt:
-      GenerateValidSlides(&positions, tile, start_pos, -1);
+      GenerateAllValidSlides(&positions, tile, start_pos);
       break;
 
     case BugType::kGrasshopper:
@@ -156,13 +237,13 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
       break;
 
     case BugType::kSpider:
-      GenerateValidSlides(&positions, tile, start_pos, 3);
+      GenerateExactValidSlides(&positions, tile, start_pos, 3);
       break;
 
     case BugType::kBeetle:
       GenerateValidClimbs(&positions, tile, start_pos);
       if (start_pos.H() == 0) {
-        GenerateValidSlides(&positions, tile, start_pos, 1);
+        GenerateExactValidSlides(&positions, tile, start_pos, 1);
       }
       break;
 
@@ -175,7 +256,7 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
       break;
 
     case BugType::kPillbug:
-      GenerateValidSlides(&positions, tile, start_pos, 1);
+      GenerateExactValidSlides(&positions, tile, start_pos, 1);
       GenerateValidPillbugSpecials(out, tile, start_pos);
       break;
 
@@ -207,92 +288,227 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
   }
 }
 
-void HiveBoard::GenerateValidSlides(absl::flat_hash_set<HivePosition>* out,
+
+
+// TODO: BIG PERF - unroll this recursive function into multiple loops
+void HiveBoard::GenerateExactValidSlides(std::vector<HivePosition>* out,
                                     HiveTile tile, HivePosition start_pos,
                                     int distance) const {
-  if (IsPinned(tile) || IsCovered(tile)) {
+
+  if (IsCovered(tile) || IsPinned(tile)) {
     return;
   }
 
-  const bool unlimited_distance = distance < 0;
-  absl::flat_hash_set<HivePosition> visited;
+  std::fill(visited_slides_.begin(), visited_slides_.end(), false);
+  visited_slides_[AxialToIndex(start_pos)] = true;
+  //std::queue<std::pair<HivePosition, int>> to_search{{{start_pos, 0}}};
+  std::vector<std::pair<HivePosition, int>> to_search{{{start_pos, 0}}};
 
-  auto dfs = [&](auto& dfs, HivePosition pos, Direction from,
-                 int depth) -> void {
-    if (visited.contains(pos) || (!unlimited_distance && depth > distance)) {
-      return;
+  // dfs
+  std::function<void(HivePosition,int)> dfs = [&](HivePosition pos, int depth) {
+    if (depth == distance || (depth > 0 && distance < 0)) {
+      out->push_back(pos);
     }
-
-    // validate positions breadth-first
+  
+    const NeighbourList& nbs = GetNeighboursOf(pos);
     for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
-      HivePosition to_test = pos + kNeighbourOffsets[dir];
-      HiveTile test_tile = GetTopTileAt(to_test);
+      // if (nbs[dir].HasValue()) {
+      //   continue;
+      // }
 
-      if (dir == from) {
+      HivePosition to_pos = pos + kNeighbourOffsets[dir];
+      size_t to_pos_idx = AxialToIndex(to_pos);
+
+      // Check these 4 conditions, with IsGated at end due to perf
+      if (visited_slides_[to_pos_idx] ||
+          nbs[dir].HasValue() ||
+          !IsInBounds(to_pos) ||
+          IsGated(pos, (Direction)dir, start_pos)) {
         continue;
       }
 
-      if (visited.contains(to_test)) {
-        continue;
-      }
+      // once here, slide can be performed
+      visited_slides_[to_pos_idx] = true;
+      dfs(to_pos, depth + 1);
 
-      // all must be false to be a valid slide direction
-      if (test_tile.HasValue() ||
-          IsGated(pos, static_cast<Direction>(dir), start_pos) ||
-          !IsConnected(to_test, start_pos)) {
-        continue;
-      }
-
-      if (depth == distance || unlimited_distance) {
-        out->insert(to_test);
-      }
-    }
-
-    if (depth == distance) {
-      return;
-    }
-
-    visited.insert(pos);
-
-    // traverse depth-first
-    for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
-      HivePosition to_test = pos + kNeighbourOffsets[dir];
-      HiveTile test_tile = GetTopTileAt(to_test);
-
-      if (dir == from) {
-        continue;
-      }
-
-      if (visited.contains(to_test)) {
-        continue;
-      }
-
-      // all must be false to be a valid slide direction
-      if (test_tile.HasValue() ||
-          IsGated(pos, static_cast<Direction>(dir), start_pos) ||
-          !IsConnected(to_test, start_pos)) {
-        continue;
-      }
-
-      if (depth == distance || unlimited_distance) {
-        out->insert(to_test);
-      }
-
-      dfs(dfs, to_test, OppositeDirection(dir), depth + 1);
-
-      if (!unlimited_distance) {
-        visited.erase(to_test);
+      // unmark this position from visited if an exact distance is needed
+      // (to allow previous paths to be reused at earlier depths)
+      if (distance > 0) {
+        visited_slides_[to_pos_idx] = false;
       }
     }
   };
 
-  dfs(dfs, start_pos, Direction::kNumAllDirections, 1);
+  dfs(start_pos, 0);
+
+  // breadth-first search
+  // while (!to_search.empty()) {
+  //   auto [pos, depth] = to_search.back();
+  //   to_search.pop_back();
+  //   const NeighbourList& nbs = GetNeighboursOf(pos);
+
+  //   for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+  //     if (nbs[dir].HasValue()) {
+  //       continue;
+  //     }
+
+  //     HivePosition to_pos = pos + kNeighbourOffsets[dir];
+  //     size_t to_pos_idx = AxialToIndex(to_pos);
+
+  //     if (visited_slides_[to_pos_idx] || !IsInBounds(to_pos)) {
+  //       continue;
+  //     }
+
+  //     if (!IsGated(pos, (Direction)dir, start_pos)) {
+  //       visited_slides_[to_pos_idx] = true;
+
+  //       if (distance < 0 || depth + 1 == distance) {
+  //         out->push_back(to_pos);
+  //       }
+
+  //       if (distance < 0 || depth + 1 < distance) {
+  //         to_search.push_back({to_pos, depth + 1});
+  //       }
+  //     }
+  //   }
+  // }
 }
 
-void HiveBoard::GenerateValidClimbs(absl::flat_hash_set<HivePosition>* out,
+void HiveBoard::GenerateAllValidSlides(std::vector<HivePosition>* out,
+                                    HiveTile tile, HivePosition start_pos) const {
+
+  std::fill(visited_slides_.begin(), visited_slides_.end(), false);
+  visited_slides_[AxialToIndex(start_pos)] = true;
+  //std::queue<std::pair<HivePosition, int>> to_search{{{start_pos, 0}}};
+  std::vector<HivePosition> to_search{start_pos};
+
+  if (IsCovered(tile) || IsPinned(tile)) {
+    return;
+  }
+
+  // breadth-first search to avoid nested DFS recursion on inner loop
+  while (!to_search.empty()) {
+    HivePosition pos = to_search.back();
+    to_search.pop_back();
+    const NeighbourList& nbs = GetNeighboursOf(pos);
+
+    for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+      if (nbs[dir].HasValue()) {
+        continue;
+      }
+
+      HivePosition to_pos = pos + kNeighbourOffsets[dir];
+      size_t to_pos_idx = AxialToIndex(to_pos);
+
+      if (visited_slides_[to_pos_idx] || !IsInBounds(to_pos)) {
+        continue;
+      }
+
+      if (!IsGated(pos, (Direction)dir, start_pos)) {
+        visited_slides_[to_pos_idx] = true;
+        out->push_back(to_pos);
+        to_search.push_back(to_pos);
+      }
+    }
+  }
+}
+
+// void HiveBoard::GenerateValidSlides(std::vector<HivePosition>* out,
+//                                     HiveTile tile, HivePosition start_pos,
+//                                     int distance) const {
+//   if (IsPinned(tile) || IsCovered(tile)) {
+//     return;
+//   }
+
+//   int dupes = 0;
+//   const bool unlimited_distance = distance < 0;
+//   absl::flat_hash_set<HivePosition> visited;
+
+//   auto dfs = [&](auto& dfs, HivePosition pos, Direction from,
+//                  int depth) -> void {
+//     if (visited.contains(pos) || (!unlimited_distance && depth > distance)) {
+//       return;
+//     }
+
+//     // validate positions breadth-first
+//     for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+//       HivePosition to_test = pos + kNeighbourOffsets[dir];
+//       HiveTile test_tile = GetTopTileAt(to_test);
+
+//       if (dir == from) {
+//         continue;
+//       }
+
+//       if (visited.contains(to_test)) {
+//         continue;
+//       }
+
+//       // all must be false to be a valid slide direction
+//       if (test_tile.HasValue() ||
+//           IsGated(pos, static_cast<Direction>(dir), start_pos) || // #PERF IsGated()
+//           !IsConnected(to_test, start_pos)) {                     // #PERF from NeighboursOf()
+//         continue;
+//       }
+
+//       if (depth == distance || unlimited_distance) {
+//         if (tile.GetBugType() == BugType::kAnt && out->contains(to_test)) {
+//           ++dupes;
+//         }
+//         out->insert(to_test);
+//       }
+//     }
+
+//     if (depth == distance) {
+//       return;
+//     }
+
+//     visited.insert(pos);
+
+//     // traverse depth-first
+//     for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+//       HivePosition to_test = pos + kNeighbourOffsets[dir];
+//       HiveTile test_tile = GetTopTileAt(to_test);
+
+//       if (dir == from) {
+//         continue;
+//       }
+
+//       if (visited.contains(to_test)) {
+//         continue;
+//       }
+
+//       // all must be false to be a valid slide direction
+//       if (test_tile.HasValue() ||
+//           IsGated(pos, static_cast<Direction>(dir), start_pos) ||
+//           !IsConnected(to_test, start_pos)) {
+//         continue;
+//       }
+
+//       if (depth == distance || unlimited_distance) {
+//         if (tile.GetBugType() == BugType::kAnt && out->contains(to_test)) {
+//           ++dupes;
+//         }
+//         out->insert(to_test);
+//       }
+
+//       dfs(dfs, to_test, OppositeDirection(dir), depth + 1);
+
+//       if (!unlimited_distance) {
+//         visited.erase(to_test);
+//       }
+//     }
+//   };
+
+//   dfs(dfs, start_pos, Direction::kNumAllDirections, 1);
+//   if (tile.GetBugType() == BugType::kAnt) {
+//     //std::cout << "Found " << dupes << " duplicate moves when generating slides for ant." << std ::endl;
+//   }
+// }
+
+void HiveBoard::GenerateValidClimbs(std::vector<HivePosition>* out,
                                     HiveTile tile,
                                     HivePosition start_pos) const {
-  if (IsPinned(tile) || IsCovered(tile)) {
+  if (IsCovered(tile) || (IsPinned(tile) && start_pos.H() == 0)) {
     return;
   }
 
@@ -308,29 +524,25 @@ void HiveBoard::GenerateValidClimbs(absl::flat_hash_set<HivePosition>* out,
       if (to_pos.H() > start_pos.H() &&
           !IsGated({start_pos.Q(), start_pos.R(), to_pos.H()},
                    static_cast<Direction>(d))) {
-        out->insert(to_pos);
+        out->push_back(to_pos);
         // climbing DOWN or across: check for gate at *this* tile's height
       } else if (to_pos.H() <= start_pos.H() &&
-                 !IsGated(start_pos,
-                          static_cast<Direction>(
-                              d)) /*&& !position_cache_.contains(to_pos)*/) {
-        out->insert(to_pos);
+                 !IsGated(start_pos,static_cast<Direction>(d))) {
+        out->push_back(to_pos);
       }
     } else {
       HivePosition to_pos = ground_pos + kNeighbourOffsets[d];
       // climbing DOWN to empty space: check for a gate at *this* tile's height
       if (to_pos.H() < start_pos.H() &&
-          !IsGated(start_pos,
-                   static_cast<Direction>(
-                       d)) /*&& !position_cache_.contains(to_pos)*/) {
-        out->insert(to_pos);
+          !IsGated(start_pos,static_cast<Direction>(d))) {
+        out->push_back(to_pos);
       }
     }
   }
 }
 
 void HiveBoard::GenerateValidGrasshopperPositions(
-    absl::flat_hash_set<HivePosition>* out, HiveTile tile,
+    std::vector<HivePosition>* out, HiveTile tile,
     HivePosition start_pos) const {
   if (IsPinned(tile) || IsCovered(tile)) {
     return;
@@ -347,13 +559,13 @@ void HiveBoard::GenerateValidGrasshopperPositions(
     }
 
     if (found) {
-      out->insert(to_test);
+      out->push_back(to_test);
     }
   }
 }
 
 void HiveBoard::GenerateValidLadybugPositions(
-    absl::flat_hash_set<HivePosition>* out, HiveTile tile,
+    std::vector<HivePosition>* out, HiveTile tile,
     HivePosition start_pos) const {
   if (IsPinned(tile) || IsCovered(tile)) {
     return;
@@ -361,9 +573,9 @@ void HiveBoard::GenerateValidLadybugPositions(
 
   // A lady bug moves in *exactly* 3 distinct steps: a climb onto the hive,
   // a slide/climb across the hive, and a climb down from the hive
-  absl::flat_hash_set<HivePosition> intermediates1;
-  absl::flat_hash_set<HivePosition> intermediates2;
-  absl::flat_hash_set<HivePosition> intermediates3;
+  std::vector<HivePosition> intermediates1;
+  std::vector<HivePosition> intermediates2;
+  std::vector<HivePosition> intermediates3;
 
   // step 1
   GenerateValidClimbs(&intermediates1, tile, start_pos);
@@ -387,7 +599,7 @@ void HiveBoard::GenerateValidLadybugPositions(
   // only consider moves that finish on ground level
   for (auto pos : intermediates3) {
     if (pos.H() == 0) {
-      out->insert(pos);
+      out->push_back(pos);
     }
   }
 }
@@ -478,6 +690,10 @@ void HiveBoard::GenerateValidPillbugSpecials(std::vector<Move>* out,
   }
 }
 
+const NeighbourList& HiveBoard::GetNeighboursOf(HivePosition pos) const {
+  return neighbours_grid_[AxialToIndex(pos)];
+}
+
 std::vector<HiveTile> HiveBoard::NeighboursOf(HivePosition pos,
                                               HivePosition to_ignore) const {
   std::vector<HiveTile> neighbours;
@@ -499,7 +715,7 @@ bool HiveBoard::MoveTile(Move move) {
   if (move.to.HasValue()) {
     new_pos = tile_positions_[move.to] + kNeighbourOffsets[move.direction];
 
-    if (IsOutOfBounds(new_pos)) {
+    if (!IsInBounds(new_pos)) {
       if (RecenterBoard(new_pos)) {
         new_pos = tile_positions_[move.to] + kNeighbourOffsets[move.direction];
       } else {
@@ -575,11 +791,27 @@ bool HiveBoard::MoveTile(Move move) {
     tile_grid_[old_idx] = HiveTile::kNoneTile;
   }
 
-  // update influence of the moved tile's colour. Potentially have to update
-  // both influences if the moved tile was part of a stack
-  UpdateInfluence(move.from.GetColour());
-  if (old_pos.H() > 0 || new_pos.H() > 0) {
-    UpdateInfluence(OtherColour(move.from.GetColour()));
+  // Board state has changed, re-calc cache(s)
+  // Only need to recalc the neighbours of "to" and "from"s neighbours
+
+  for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+    // tell the neighbours of old_pos that they have lost a neighbour in the
+    // opposing direction, unless tile played for first time
+    if (old_pos != kNullPosition) {
+      size_t old_neighbour_idx = AxialToIndex(old_pos.NeighbourAt(static_cast<Direction>(dir)));
+      
+      if (old_neighbour_idx < BoardSize() && old_neighbour_idx >= 0) {
+        // tile_grid_[old_idx] is either kNoneTile, or the next highest tile in stack
+        neighbours_grid_[old_neighbour_idx][OppositeDirection(dir)] = tile_grid_[old_idx];
+      }
+    }
+
+    // tell the neighbours of new_pos that they have gained a neighbour in the
+    // opposing direction
+    size_t new_neighbour_idx = AxialToIndex(new_pos.NeighbourAt(static_cast<Direction>(dir)));
+    if (new_neighbour_idx < BoardSize() && new_neighbour_idx >= 0) {
+      neighbours_grid_[new_neighbour_idx][OppositeDirection(dir)] = move.from;
+    }
   }
 
   UpdateArticulationPoints();
@@ -587,8 +819,9 @@ bool HiveBoard::MoveTile(Move move) {
   return true;
 }
 
-bool HiveBoard::IsOutOfBounds(HivePosition pos) const {
-  return pos.DistanceTo(kOriginPosition) > hex_radius_;
+bool HiveBoard::IsInBounds(HivePosition pos) const {
+  return (pos.Q() >= -Radius() && pos.Q() <= Radius() &&
+          pos.R() >= -Radius() && pos.R() <= Radius());
 }
 
 bool HiveBoard::RecenterBoard(HivePosition new_pos) {
@@ -632,7 +865,7 @@ bool HiveBoard::RecenterBoard(HivePosition new_pos) {
   HivePosition offset = HivePosition(-round_Q, -round_R);
 
   // there are no valid directions to reposition the board without going OOB
-  if (offset == kOriginPosition || IsOutOfBounds(new_pos + offset)) {
+  if (offset == kOriginPosition || !IsInBounds(new_pos + offset)) {
     return false;
   }
 
@@ -643,7 +876,7 @@ bool HiveBoard::RecenterBoard(HivePosition new_pos) {
                   tile_positions_[tile] += offset;
 
                   // this usually occurs when tiles exist at each axes' extremes
-                  if (IsOutOfBounds(tile_positions_[tile])) {
+                  if (!IsInBounds(tile_positions_[tile])) {
                     oob = true;
                   }
                 });
@@ -652,16 +885,41 @@ bool HiveBoard::RecenterBoard(HivePosition new_pos) {
     return false;
   }
 
+  // TODO: REMOVE
+  has_recentered_ = true;
+  // TODO: REMOVE
+
   // recalculate grid indices
   std::fill(tile_grid_.begin(), tile_grid_.end(), HiveTile::kNoneTile);
-  for (uint8_t i = HiveTile::wQ; i < HiveTile::kNumTiles; ++i) {
-    if (IsInPlay(i) && !IsCovered(i)) {
-      tile_grid_[AxialToIndex(GetPositionOf(i))] = i;
+  for (uint8_t tile = HiveTile::wQ; tile < HiveTile::kNumTiles; ++tile) {
+    if (IsInPlay(tile) && !IsCovered(tile)) {
+      tile_grid_[AxialToIndex(GetPositionOf(tile))] = tile;
     }
   }
 
-  UpdateInfluence(Colour::kWhite);
-  UpdateInfluence(Colour::kBlack);
+  // reset neigbhours
+  for (auto nbs : neighbours_grid_) {
+    std::fill(nbs.begin(), nbs.end(), HiveTile::kNoneTile);
+  }
+
+  // full neighbour re-calculation (expensive but very infrequent)
+  for (uint8_t tile = HiveTile::wQ; tile < HiveTile::kNumTiles; ++tile) {
+    if (IsInPlay(tile)) {
+      HivePosition pos = tile_positions_[tile];
+      for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+        HivePosition nb_pos = pos + kNeighbourOffsets[dir];
+        HiveTile nb_tile = GetTopTileAt(nb_pos);
+
+        // bi-directional neighbour pair
+        neighbours_grid_[AxialToIndex(pos)][dir] = nb_tile;
+        if (IsInBounds(nb_pos)) {
+          neighbours_grid_[AxialToIndex(nb_pos)][OppositeDirection(dir)] = GetTopTileAt(pos);
+        }
+      }
+    }
+  }
+
+  // must be AFTER neighbour calculations
   UpdateArticulationPoints();
 
   return true;
@@ -689,13 +947,12 @@ bool HiveBoard::IsQueenSurrounded(Colour c) const {
 
 // tile accessor with bounds checking
 HiveTile HiveBoard::GetTopTileAt(HivePosition pos) const {
-  if (pos.DistanceTo(kOriginPosition) > Radius()) {
+  size_t idx = AxialToIndex(pos);
+  if (idx < 0 || idx >= tile_grid_.size()) {
     return HiveTile::kNoneTile;
   }
 
-  SPIEL_DCHECK_GE(AxialToIndex(pos), 0);
-  SPIEL_DCHECK_LT(AxialToIndex(pos), tile_grid_.size());
-  return tile_grid_[AxialToIndex(pos)];
+  return tile_grid_[idx];
 }
 
 HiveTile HiveBoard::GetTileBelow(HivePosition pos) const {
@@ -723,9 +980,9 @@ bool HiveBoard::IsGated(HivePosition pos, Direction d,
   HivePosition cw = pos + kNeighbourOffsets[ClockwiseDirection(d)];
   HivePosition ccw = pos + kNeighbourOffsets[CounterClockwiseDirection(d)];
 
-  bool cw_exists =
+  const bool cw_exists =
       cw != to_ignore && GetPositionOf(GetTopTileAt(cw)).H() >= pos.H();
-  bool ccw_exists =
+  const bool ccw_exists =
       ccw != to_ignore && GetPositionOf(GetTopTileAt(ccw)).H() >= pos.H();
   return pos.H() == 0 ? cw_exists == ccw_exists : cw_exists && ccw_exists;
 }
@@ -747,86 +1004,129 @@ bool HiveBoard::IsCovered(HiveTile tile) const {
 }
 
 bool HiveBoard::IsPinned(HivePosition pos) const {
-  return articulation_points_.contains(pos);
+  return IsPinned(GetTopTileAt(pos));
 }
 
 bool HiveBoard::IsPinned(HiveTile tile) const {
-  return tile.HasValue() && IsPinned(tile_positions_[tile]);
+  if (tile.HasValue()) {
+    return pinned_tiles_[tile];
+  }
+
+  return false;
 }
 
+// #PERF Big one (.contains())
 bool HiveBoard::IsPlaceable(Colour c, HivePosition pos) const {
-  return colour_influence_[static_cast<int>(c)].contains(pos) &&
-         !colour_influence_[static_cast<int>(OtherColour(c))].contains(pos) &&
-         !IsInPlay(GetTopTileAt(pos));
-}
+  if (IsInPlay(GetTopTileAt(pos))) {
+    return false;
+  }
 
-// clear and recalculate this tile's player's influence range
-void HiveBoard::UpdateInfluence(Colour c) {
-  colour_influence_[static_cast<int>(c)].clear();
-  for (auto tile : played_tiles_) {
-    if (tile.GetColour() != c) {
-      continue;
+  bool friendly_nb = false;
+  bool opposing_nb = false;
+  for (auto nb : GetNeighboursOf(pos)) {
+    if (nb.HasValue()) {
+      friendly_nb |= nb.GetColour() == c;
+      opposing_nb |= nb.GetColour() == OtherColour(c);
     }
 
-    // if a tile is covered, it has no influence
-    if (IsCovered(tile)) {
-      continue;
-    }
-
-    // exert influence on all neighbouring positions
-    for (auto pos : tile_positions_[tile].Neighbours()) {
-      // 0 out the height, so that stacked tiles influence the ground tiles
-      // around them, not tiles floating in air
-      colour_influence_[static_cast<int>(c)].insert(pos.Grounded());
+    if (opposing_nb) {
+      return false;
     }
   }
+
+  return friendly_nb && !opposing_nb;
 }
 
+void HiveBoard::BoardUpdated(HivePosition old_pos, HivePosition new_pos) {
+  UpdateNeighbours(old_pos, new_pos);
+  UpdateArticulationPoints();
+}
+
+void HiveBoard::UpdateNeighbours(HivePosition old_pos, HivePosition new_pos) {
+
+}
+
+
 void HiveBoard::UpdateArticulationPoints() {
-  articulation_points_.clear();
+  pinned_tiles_.fill(false);
 
   int visit_order = 0;
-  absl::flat_hash_set<HivePosition> visited;
-  absl::flat_hash_map<HivePosition, int> entry_point;
-  absl::flat_hash_map<HivePosition, int> low_point;
+  std::bitset<HiveTile::kNumTiles> visited;
+  std::array<int, HiveTile::kNumTiles> entry_point{};
+  std::array<int, HiveTile::kNumTiles> low_point{};
 
-  auto dfs = [&](auto& dfs, HivePosition vertex, HivePosition parent,
+  auto dfs = [&, this/*TODO: CHANGE THIS*/](auto& dfs, HivePosition vertex, HiveTile parent_tile,
                  bool is_root) -> void {
-    visited.insert(vertex);
-    entry_point[vertex] = low_point[vertex] = visit_order;
+    HiveTile tile = GetTopTileAt(vertex);
+
+    // TODO DELEEETE
+    if (!tile.HasValue()) {
+      std::cout << "invalid articulation at idx " << this->AxialToIndex(vertex) << " with parent " << parent_tile.ToUHP() << std::endl;
+      std::cout << absl::StrJoin(tile_grid_, ";") << std::endl;
+      // SpielFatalError("RYAAAAN");
+    }
+    visited.set(tile);
+    entry_point[tile] = low_point[tile] = visit_order;
     ++visit_order;
+    if (visit_order > 50) {
+      std::string line;
+      std::getline(std::cin, line);
+    }
 
     int children = 0;
-    for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
-      HivePosition to_vertex = vertex + kNeighbourOffsets[dir];
-      if (!GetTopTileAt(to_vertex).HasValue()) {
+    for (auto neighbour : GetNeighboursOf(vertex)) {
+      if (!neighbour.HasValue()) {
         continue;
       }
 
-      if (to_vertex == parent) {
+      if (neighbour == parent_tile) {
         continue;
       }
 
-      if (visited.contains(to_vertex)) {
-        low_point[vertex] = std::min(low_point[vertex], entry_point[to_vertex]);
+      if (visited.test(neighbour)) {
+        low_point[tile] = std::min(low_point[tile], entry_point[neighbour]);
       } else {
-        dfs(dfs, to_vertex, vertex, false);
+        dfs(dfs, tile_positions_[neighbour], tile, false);
         ++children;
-        low_point[vertex] = std::min(low_point[vertex], low_point[to_vertex]);
-        if (low_point[to_vertex] >= entry_point[vertex] && !is_root) {
-          articulation_points_.insert(vertex);
+        low_point[tile] = std::min(low_point[tile], low_point[neighbour]);
+        if (low_point[neighbour] >= entry_point[tile] && !is_root) {
+          pinned_tiles_[tile] = true;
         }
       }
     }
 
+    // for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+    //   HivePosition to_vertex = vertex + kNeighbourOffsets[dir];
+    //   if (!GetTopTileAt(to_vertex).HasValue()) {
+    //     continue;
+    //   }
+
+    //   if (to_vertex == parent_tile) {
+    //     continue;
+    //   }
+
+    //   if (visited.contains(to_vertex)) {
+    //     low_point[vertex] = std::min(low_point[vertex], entry_point[to_vertex]);
+    //   } else {
+    //     dfs(dfs, to_vertex, vertex, false);
+    //     ++children;
+    //     low_point[vertex] = std::min(low_point[vertex], low_point[to_vertex]);
+    //     if (low_point[to_vertex] >= entry_point[vertex] && !is_root) {
+    //       pinned_tiles_[tile] = true;
+    //     }
+    //   }
+    // }
+
     if (is_root && children > 1) {
-      articulation_points_.insert(vertex);
+      if (tile.HasValue()) {
+        pinned_tiles_[tile] = true;
+      }
     }
   };
 
   // any arbitrary starting point would do, but the Queen is guaranteed to be
   // in play when generating moves
-  dfs(dfs, tile_positions_[HiveTile::wQ], kNullPosition, true);
+  dfs(dfs, tile_positions_[HiveTile::wQ], HiveTile::kNoneTile, true);
 }
 
 std::string HiveTile::ToUHP() const {

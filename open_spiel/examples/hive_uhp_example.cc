@@ -23,7 +23,7 @@
 #include "open_spiel/tests/console_play_test.h"
 
 
-ABSL_FLAG(std::string, game, "hive(ansi_color_output=true,fixed_orientation=true)", "The name of the game to play.");
+ABSL_FLAG(std::string, game, "hive(ansi_color_output=true)", "The name of the game to play.");
 
 namespace open_spiel {
 namespace hive {

@@ -60,7 +60,7 @@ SimulationResult RandomSimulation(std::mt19937* rng, const Game& game, bool verb
       state->InformationStateTensor(state->CurrentPlayer(),
                                     absl::MakeSpan(obs));
     } else if (provides_observations_tensor && state->CurrentPlayer() >= 0) {
-      state->ObservationTensor(state->CurrentPlayer(), absl::MakeSpan(obs));
+      //state->ObservationTensor(state->CurrentPlayer(), absl::MakeSpan(obs));
     }
     ++game_length;
     if (state->IsChanceNode()) {

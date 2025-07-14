@@ -268,6 +268,7 @@ endif()
 include_directories(..)
 
 add_subdirectory (algorithms)
+add_subdirectory (alpha_hive)
 add_subdirectory (bots)
 add_subdirectory (evaluation)
 add_subdirectory (examples)

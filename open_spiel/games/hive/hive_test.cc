@@ -225,6 +225,9 @@ void TestBugMoves() {
             mosquito_valid_moves, mosquito_invalid_moves);
   TestMoves(DeserializeUHPGameAndState(ladybug_test_game).second,
             ladybug_valid_moves, ladybug_invalid_moves);
+
+  // TODO: Make sure this test checks that pillbug's special can't be used
+  // on beetles that are on top of the hive
   TestMoves(DeserializeUHPGameAndState(pillbug_test_game).second,
             pillbug_valid_moves, pillbug_invalid_moves);
 

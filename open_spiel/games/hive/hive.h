@@ -16,7 +16,6 @@
 #define OPEN_SPIEL_GAMES_HIVE_H_
 
 #include <array>
-#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
@@ -74,6 +73,9 @@
 //                               (default = true)
 //   "ansi_color_output" bool    Whether to color the output for a terminal.
 //                               (default = false)
+//   "fixed_orientation" bool    Whether to force a standard orientation for
+//                               the first pair of moves (simplifies the state)
+//                               (default = false)
 
 namespace open_spiel {
 namespace hive {
@@ -83,7 +85,8 @@ namespace hive {
 inline constexpr int kNumDistinctActions = 5488 + 1;  // +1 for pass
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kNumBaseBugTypes = 5;
-inline constexpr int kMaxGameLength = 500;
+inline constexpr int kMaxGameLength = 1000;
+inline constexpr int kBranchingFactor = 100; // ~approximate average
 inline constexpr const char* kUHPNotStarted = "NotStarted";
 inline constexpr const char* kUHPInProgress = "InProgress";
 inline constexpr const char* kUHPWhiteWins = "WhiteWins";
@@ -97,7 +100,8 @@ class HiveState : public State {
                      int board_size = kDefaultBoardRadius,
                      ExpansionInfo expansions = {},
                      int num_bug_types = kNumBaseBugTypes,
-                     bool ansi_color_output = false);
+                     bool ansi_color_output = false,
+                     bool fixed_orientation = false);
 
   HiveState(const HiveState&) = default;
   HiveState& operator=(const HiveState&) = default;
@@ -173,7 +177,7 @@ class HiveState : public State {
 
   // an axial coordinate at position (q, r) is stored at index [r][q] after
   // translating the axial coordinate by the length of the radius
-  inline std::array<int, 2> AxialToTensorIndex(HivePosition pos) const {
+  inline std::array<int, 2> AxialToTensorIndices(HivePosition pos) const {
     return {pos.R() + Board().Radius(), pos.Q() + Board().Radius()};
   }
 
@@ -182,6 +186,7 @@ class HiveState : public State {
   ExpansionInfo expansions_;
   int num_bug_types_;
   bool ansi_color_output_;
+  bool fixed_orientation_;
   bool force_terminal_;
 };
 
@@ -194,7 +199,7 @@ class HiveGame : public Game {
   inline std::unique_ptr<State> NewInitialState() const override {
     return std::make_unique<HiveState>(shared_from_this(), board_radius_,
                                        expansions_, num_bug_types_,
-                                       ansi_color_output_);
+                                       ansi_color_output_, fixed_orientation_);
   }
   int NumPlayers() const override { return kNumPlayers; }
   double MinUtility() const override { return -1; }
@@ -221,6 +226,7 @@ class HiveGame : public Game {
   int board_radius_;
   int num_bug_types_;
   bool ansi_color_output_;
+  bool fixed_orientation_;
   ExpansionInfo expansions_;
 };
 

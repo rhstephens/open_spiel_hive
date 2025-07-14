@@ -26,11 +26,12 @@
 #include "open_spiel/utils/json.h"
 #include "open_spiel/utils/thread.h"
 
-ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
-ABSL_FLAG(std::string, path, "/tmp/az", "Where to output the logs.");
+ABSL_FLAG(std::string, game, "hive(board_size=14,fixed_orientation=true)", "The name of the game to play.");
+ABSL_FLAG(std::string, path, "./training/az", "Path to store model/logs/train data etc.");
 ABSL_FLAG(std::string, graph_def, "",
           ("Where to get the graph. This could be from export_model.py, or "
            "from a checkpoint. If this is empty it'll create one."));
+ABSL_FLAG(std::string, imitation_dataset_path, "", "Path to expert dataset for imitation pre-training.");
 ABSL_FLAG(std::string, nn_model, "resnet",
           "Model torso type, can be resnet or mlp.");
 ABSL_FLAG(int, nn_width, 128, "Width of the model, passed to export_model.py.");
@@ -62,7 +63,7 @@ ABSL_FLAG(int, inference_batch_size, 1,
 ABSL_FLAG(int, inference_threads, 0, "How many threads to run inference.");
 ABSL_FLAG(int, inference_cache, 1 << 18,
           "Whether to cache the results from inference.");
-ABSL_FLAG(std::string, devices, "/cpu:0",
+ABSL_FLAG(std::string, devices, "cuda:0,cpu:0,cpu:1,cpu:2,cpu:3,cpu:4,cpu:5,cpu:6,cpu:7,cpu:8,cpu:9,cpu:10,cpu:11,cpu:12,cpu:13,cpu:14,cpu:15",
           "Comma separated list of devices. The first device listed is used "
           "also as the learner. Allowable device names: cpu, cuda:0, cuda:1, "
           "cuda:2, cuda:3, ... Where cuda:n implies the n'th GPU resource.");
@@ -80,7 +81,7 @@ ABSL_FLAG(int, eval_levels, 7,
            " simulations for n in range(eval_levels). Default of 7 means "
            "running mcts with up to 1000 times more simulations."));
 ABSL_FLAG(int, max_steps, 0, "How many learn steps to run.");
-ABSL_FLAG(int, evaluation_window, 100,
+ABSL_FLAG(int, evaluation_window, 20,
           "Number of games to average results over.");
 
 open_spiel::StopToken stop_token;
@@ -131,6 +132,7 @@ int main(int argc, char** argv) {
 
     config.game = absl::GetFlag(FLAGS_game);
     config.path = absl::GetFlag(FLAGS_path);
+    config.imitation_dataset_path = absl::GetFlag(FLAGS_imitation_dataset_path);
     config.graph_def = absl::GetFlag(FLAGS_graph_def);
     config.nn_model = absl::GetFlag(FLAGS_nn_model);
     config.nn_width = absl::GetFlag(FLAGS_nn_width);
