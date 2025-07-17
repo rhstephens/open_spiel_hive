@@ -97,7 +97,6 @@ inline constexpr const char* kUHPDraw = "Draw";
 class HiveState : public State {
  public:
   explicit HiveState(std::shared_ptr<const Game> game,
-                     int board_size = kDefaultBoardRadius,
                      ExpansionInfo expansions = {},
                      int num_bug_types = kNumBaseBugTypes,
                      bool ansi_color_output = false,
@@ -178,7 +177,8 @@ class HiveState : public State {
   // an axial coordinate at position (q, r) is stored at index [r][q] after
   // translating the axial coordinate by the length of the radius
   inline std::array<int, 2> AxialToTensorIndices(HivePosition pos) const {
-    return {pos.R() + Board().Radius(), pos.Q() + Board().Radius()};
+    return {pos.R() + HiveBoard::kBoardDims / 2,
+            pos.Q() + HiveBoard::kBoardDims / 2};
   }
 
   Player current_player_ = kPlayerWhite;

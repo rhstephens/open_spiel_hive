@@ -33,16 +33,13 @@
 namespace open_spiel {
 namespace hive {
 
-HiveBoard::HiveBoard(int board_radius, ExpansionInfo expansions,
-                     bool fixed_orientation)
-    : hex_radius_(std::min(board_radius, kMaxBoardRadius)),
-      expansions_(expansions),
-      fixed_orientation_(fixed_orientation),
-      square_dims_(2 * Radius() + 1),
-      board_size_(square_dims_ * square_dims_),
-      tile_grid_(board_size_),
-      visited_slides_(board_size_, false),
-      neighbours_grid_(board_size_) {}
+HiveBoard::HiveBoard(ExpansionInfo expansions, bool fixed_orientation)
+    : expansions_(expansions), fixed_orientation_(fixed_orientation),
+      grid_occupancy_() {
+
+  // populate bitmasks
+  grid_nbr_mask_[0][0][1] = 2;
+}
 
 void HiveBoard::GenerateAllMoves(std::vector<Move>* out_vec, Colour to_move,
                                  int move_number) const {
@@ -219,7 +216,7 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
   SPIEL_DCHECK_TRUE(expansions_.IsBugTypeEnabled(acting_type));
 
   HivePosition start_pos = tile_positions_[tile];
-  std::vector<HivePosition> positions;
+  std::vector<size_t> positions;
   //positions.reserve(Direction::kNumCardinalDirections);
 
   // using an explicitly provided acting BugType to account for the Mosquito
@@ -291,10 +288,9 @@ void HiveBoard::GenerateMovesFor(std::vector<Move>* out, HiveTile tile,
 
 
 // TODO: BIG PERF - unroll this recursive function into multiple loops
-void HiveBoard::GenerateExactValidSlides(std::vector<HivePosition>* out,
-                                    HiveTile tile, HivePosition start_pos,
+void HiveBoard::GenerateExactValidSlides(std::vector<size_t>* out,
+                                    HiveTile tile, size_t tile_idx,
                                     int distance) const {
-
   if (IsCovered(tile) || IsPinned(tile)) {
     return;
   }
@@ -374,47 +370,61 @@ void HiveBoard::GenerateExactValidSlides(std::vector<HivePosition>* out,
   // }
 }
 
-void HiveBoard::GenerateAllValidSlides(std::vector<HivePosition>* out,
-                                    HiveTile tile, HivePosition start_pos) const {
-
-  std::fill(visited_slides_.begin(), visited_slides_.end(), false);
-  visited_slides_[AxialToIndex(start_pos)] = true;
-  //std::queue<std::pair<HivePosition, int>> to_search{{{start_pos, 0}}};
-  std::vector<HivePosition> to_search{start_pos};
-
+void HiveBoard::GenerateAllValidSlides(std::vector<size_t>* out,
+                                    HiveTile tile, size_t start_pos) const {
   if (IsCovered(tile) || IsPinned(tile)) {
     return;
   }
 
+  std::bitset<kNumCells> visited;
+  visited.set(start_pos) = true;
+  //std::queue<std::pair<HivePosition, int>> to_search{{{start_pos, 0}}};
+  std::vector<size_t> to_search{start_pos};
+  to_search.reserve(HiveTile::kNumTiles);
+
+  // temporarily remove this tile from occupancy mask
+  size_t start_pos_word_idx = WordIndex(start_pos);
+  size_t start_pos_bit_idx = BitIndex(start_pos);
+
   // breadth-first search to avoid nested DFS recursion on inner loop
   while (!to_search.empty()) {
-    HivePosition pos = to_search.back();
+    size_t pos = to_search.back();
     to_search.pop_back();
-    const NeighbourList& nbs = GetNeighboursOf(pos);
 
     for (uint8_t dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
-      if (nbs[dir].HasValue()) {
-        continue;
+      uint64_t dest_occupied = 0, left_occupied = 0, right_occupied = 0, dest_idx = 0;
+
+      for (size_t word_idx = min_word_idx; word_idx < max_word_idx; ++word_idx) {
+        uint64_t occ_mask = grid_occupancy_[word_idx];
+
+        uint64_t word_mask = -static_cast<int64_t>(word_idx == WordIndex(start_pos));
+        uint64_t bit_mask = word_mask & (1 << BitIndex(start_pos));
+
+        // remove the original tile from occupancy mask
+        occ_mask |= (word_mask & bit_mask);
+
+        uint64_t nbr_mask = grid_nbr_mask_[word_idx][pos][dir];
+
+        dest_idx |= nbr_mask;
+        dest_occupied |= (occ_mask & nbr_mask);
+        left_occupied |= (occ_mask & grid_left_adj_mask_[word_idx][pos][dir]);
+        right_occupied |= (occ_mask & grid_right_adj_mask_[word_idx][pos][dir]);
       }
 
-      HivePosition to_pos = pos + kNeighbourOffsets[dir];
-      size_t to_pos_idx = AxialToIndex(to_pos);
-
-      if (visited_slides_[to_pos_idx] || !IsInBounds(to_pos)) {
-        continue;
-      }
-
-      if (!IsGated(pos, (Direction)dir, start_pos)) {
-        visited_slides_[to_pos_idx] = true;
-        out->push_back(to_pos);
-        to_search.push_back(to_pos);
+      // Gated check
+      if (dest_occupied == 0 && ((left_occupied == 0) ^ (right_occupied == 0))) {
+        uint64_t dest_pos = __builtin_ctzll(dest_idx);
+        dest_pos = (dest_pos / 64) * 64 + (dest_pos % 64);
+        visited.set(dest_pos);
+        out->push_back(dest_pos);
+        to_search.push_back(dest_pos);
       }
     }
   }
 }
 
-// void HiveBoard::GenerateValidSlides(std::vector<HivePosition>* out,
-//                                     HiveTile tile, HivePosition start_pos,
+// void HiveBoard::GenerateValidSlides(std::vector<size_t>* out,
+//                                     HiveTile tile, size_t tile_idx,
 //                                     int distance) const {
 //   if (IsPinned(tile) || IsCovered(tile)) {
 //     return;
@@ -505,9 +515,9 @@ void HiveBoard::GenerateAllValidSlides(std::vector<HivePosition>* out,
 //   }
 // }
 
-void HiveBoard::GenerateValidClimbs(std::vector<HivePosition>* out,
+void HiveBoard::GenerateValidClimbs(std::vector<size_t>* out,
                                     HiveTile tile,
-                                    HivePosition start_pos) const {
+                                    size_t tile_idx) const {
   if (IsCovered(tile) || (IsPinned(tile) && start_pos.H() == 0)) {
     return;
   }
@@ -542,8 +552,8 @@ void HiveBoard::GenerateValidClimbs(std::vector<HivePosition>* out,
 }
 
 void HiveBoard::GenerateValidGrasshopperPositions(
-    std::vector<HivePosition>* out, HiveTile tile,
-    HivePosition start_pos) const {
+    std::vector<size_t>* out, HiveTile tile,
+    size_t tile_idx) const {
   if (IsPinned(tile) || IsCovered(tile)) {
     return;
   }
@@ -565,8 +575,8 @@ void HiveBoard::GenerateValidGrasshopperPositions(
 }
 
 void HiveBoard::GenerateValidLadybugPositions(
-    std::vector<HivePosition>* out, HiveTile tile,
-    HivePosition start_pos) const {
+    std::vector<size_t>* out, HiveTile tile,
+    size_t tile_idx) const {
   if (IsPinned(tile) || IsCovered(tile)) {
     return;
   }
@@ -606,7 +616,7 @@ void HiveBoard::GenerateValidLadybugPositions(
 
 void HiveBoard::GenerateValidMosquitoPositions(std::vector<Move>* out,
                                                HiveTile tile,
-                                               HivePosition start_pos,
+                                               size_t tile_idx,
                                                Colour to_move) const {
   // we defer IsPinned() check as the Mosquito could still use a Pillbug special
   if (IsCovered(tile)) {
@@ -644,7 +654,7 @@ void HiveBoard::GenerateValidMosquitoPositions(std::vector<Move>* out,
 
 void HiveBoard::GenerateValidPillbugSpecials(std::vector<Move>* out,
                                              HiveTile tile,
-                                             HivePosition start_pos) const {
+                                             size_t tile_idx) const {
   // Pillbug can still perform its special when Pinned
   if (IsCovered(tile)) {
     return;
@@ -1048,8 +1058,6 @@ void HiveBoard::UpdateNeighbours(HivePosition old_pos, HivePosition new_pos) {
 
 
 void HiveBoard::UpdateArticulationPoints() {
-  pinned_tiles_.fill(false);
-
   int visit_order = 0;
   std::bitset<HiveTile::kNumTiles> visited;
   std::array<int, HiveTile::kNumTiles> entry_point{};
@@ -1059,12 +1067,6 @@ void HiveBoard::UpdateArticulationPoints() {
                  bool is_root) -> void {
     HiveTile tile = GetTopTileAt(vertex);
 
-    // TODO DELEEETE
-    if (!tile.HasValue()) {
-      std::cout << "invalid articulation at idx " << this->AxialToIndex(vertex) << " with parent " << parent_tile.ToUHP() << std::endl;
-      std::cout << absl::StrJoin(tile_grid_, ";") << std::endl;
-      // SpielFatalError("RYAAAAN");
-    }
     visited.set(tile);
     entry_point[tile] = low_point[tile] = visit_order;
     ++visit_order;

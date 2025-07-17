@@ -98,14 +98,18 @@ class HivePosition {
   constexpr HivePosition(int8_t q, int8_t r, int8_t h = 0)
       : q_(q), r_(r), h_(h) {}
 
-  int8_t Q() const { return q_; }
-  int8_t R() const { return r_; }
+  constexpr int8_t Q() const { return q_; }
+  constexpr int8_t R() const { return r_; }
 
   // height above the hive, where 0 == "ground"
-  int8_t H() const { return h_; }
+  constexpr int8_t H() const { return h_; }
 
   // implicit 3rd axial coordinate S to maintain constraint: q + r + s = 0
-  int8_t S() const { return -q_ - r_; }
+  constexpr int8_t S() const { return -q_ - r_; }
+
+  constexpr operator size_t() {
+    return HiveBoard::AxialToIndex(*this);
+  }
 
   int DistanceTo(HivePosition other) const {
     return (std::abs(q_ - other.q_) +
@@ -141,18 +145,8 @@ class HivePosition {
                         std::to_string(h_), ")");
   }
 
-  std::array<HivePosition, Direction::kNumCardinalDirections> Neighbours()
-      const {
-    return {{{(q_ + 1), (r_ - 1)},
-             {(q_ + 1), (r_)},
-             {(q_), (r_ + 1)},
-             {(q_ - 1), (r_ + 1)},
-             {(q_ - 1), (r_)},
-             {(q_), (r_ - 1)}}};
-  }
-
   HivePosition NeighbourAt(Direction dir) const;
-  HivePosition Grounded() const { return {q_, r_, 0}; }
+  constexpr HivePosition Grounded() const { return {q_, r_, 0}; }
 
   void SetQ(int8_t q) { q_ = q; }
   void SetR(int8_t r) { r_ = r; }
@@ -164,8 +158,6 @@ class HivePosition {
   int8_t h_;
 };
 
-inline constexpr int kMaxBoardRadius = 14;
-inline constexpr int kDefaultBoardRadius = 8;
 inline constexpr std::array<int, static_cast<int>(BugType::kNumBugTypes)>
     kBugCounts = {{1, 3, 3, 2, 2, 1, 1, 1}};
 inline constexpr Player kPlayerWhite = 0;
@@ -570,29 +562,44 @@ using NeighbourList = std::array<HiveTile, kNumCardinalDirections>;
 //
 class HiveBoard {
  public:
-  // TODO: REMOVE
+  // static board size for perf
+  static constexpr int kBoardDims = 32;
+  static constexpr int kNumCells = kBoardDims * kBoardDims;
+  static constexpr int kNumWords = kNumCells / 64;
+  static constexpr int kDirections = 6;
 
-  bool has_recentered_ = false;
-
-
-
-
-
-
+  // spend the extra memory for extreme vectorization of slide calculations.
+  // the grid masks at [word][n][dir] contains 1024 bits that represent the
+  // neighbours or slideable gaps for that cell [n] in direction [dir]
+  static uint64_t grid_nbr_mask_[kNumWords][kNumCells][kDirections];
+  static uint64_t grid_left_adj_mask_[kNumWords][kNumCells][kDirections];
+  static uint64_t grid_right_adj_mask_[kNumWords][kNumCells][kDirections];
 
   // Creates a regular hexagonal board with given radius from the center
-  HiveBoard(int board_radius, ExpansionInfo expansions, bool fixed_orientation);
-
-  int Radius() const { return hex_radius_; }
-  int SquareDimensions() const { return square_dims_; }
-  size_t BoardSize() const { return board_size_; }
+  constexpr HiveBoard(ExpansionInfo expansions, bool fixed_orientation);
 
   // Axial position (Q,R) is stored at the 2d-index:
   //   grid_[R + Radius()][Q + Radius()]
   // which translates to the flattened index:
   //   grid_[Q + Radius() + ((R + Radius()) * SqDims)]
-  size_t AxialToIndex(HivePosition pos) const {
-    return pos.Q() + Radius() + ((pos.R() + Radius()) * SquareDimensions());
+  static constexpr size_t AxialToIndex(HivePosition pos) {
+    return pos.Q() + kBoardDims / 2 + ((pos.R() + kBoardDims / 2) * kBoardDims);
+  }
+
+  constexpr size_t BitIndex(size_t pos_idx) const {
+    return pos_idx % 64;
+  }
+
+  constexpr size_t WordIndex(size_t pos_idx) const {
+    return pos_idx / 64;
+  }
+
+  void SetOccupied(size_t pos_idx) {
+    grid_occupancy_[WordIndex(pos_idx)] |= uint64_t(1) << BitIndex(pos_idx);
+  }
+
+  void SetEmpty(size_t pos_idx) {
+    grid_occupancy_[WordIndex(pos_idx)] &= ~(uint64_t(1) << BitIndex(pos_idx));
   }
 
   HiveTile GetTopTileAt(HivePosition pos) const;
@@ -647,29 +654,29 @@ class HiveBoard {
   //    one of the two adjacent positions (D-1) (D+1) must be empty to
   //    physically move in, and the other position must be occupied in order
   //    to remain attached to the hive at all times (One-Hive rule)
-  void GenerateExactValidSlides(std::vector<HivePosition>* out,
-                                HiveTile tile, HivePosition pos,
+  void GenerateExactValidSlides(std::vector<size_t>* out,
+                                HiveTile tile, size_t tile_idx,
                                 int distance) const;
 
   // Generating all slides (i.e. Ant moves) is calculated differently for perf
-  void GenerateAllValidSlides(std::vector<HivePosition>* out,
-                                HiveTile tile, HivePosition pos) const;
+  void GenerateAllValidSlides(std::vector<size_t>* out,
+                                HiveTile tile, size_t tile_idx) const;
 
   // A climb consists of a slide on top the hive laterally, with an optional
   // vertical movement, in any non-gated direction. This slide is less
   // restrictive than a ground-level slide as you do not require neighbours
   // to remain connected to the hive
-  void GenerateValidClimbs(std::vector<HivePosition>* out,
-                           HiveTile tile, HivePosition pos) const;
+  void GenerateValidClimbs(std::vector<size_t>* out,
+                           HiveTile tile, size_t tile_idx) const;
 
-  void GenerateValidGrasshopperPositions(std::vector<HivePosition>* out,
-                                         HiveTile tile, HivePosition pos) const;
-  void GenerateValidLadybugPositions(std::vector<HivePosition>* out,
-                                     HiveTile tile, HivePosition pos) const;
+  void GenerateValidGrasshopperPositions(std::vector<size_t>* out,
+                                         HiveTile tile, size_t tile_idx) const;
+  void GenerateValidLadybugPositions(std::vector<size_t>* out,
+                                     HiveTile tile, size_t tile_idx) const;
   void GenerateValidMosquitoPositions(std::vector<Move>* out, HiveTile tile,
-                                      HivePosition pos, Colour to_move) const;
+                                      size_t tile_idx, Colour to_move) const;
   void GenerateValidPillbugSpecials(std::vector<Move>* out, HiveTile tile,
-                                    HivePosition pos) const;
+                                    size_t tile_idx) const;
 
   void BoardUpdated(HivePosition old_pos, HivePosition new_pos);
   void UpdateNeighbours(HivePosition old_pos, HivePosition new_pos);
@@ -685,17 +692,12 @@ class HiveBoard {
   // https://cp-algorithms.com/graph/cutpoints.html
   void UpdateArticulationPoints();
 
-  int hex_radius_;
-  int square_dims_;
-  size_t board_size_;
-  bool fixed_orientation_;
-  ExpansionInfo expansions_;
+  //
+  uint64_t grid_occupancy_[kNumWords];
+  size_t min_word_idx;
+  size_t max_word_idx;
 
-  // all computed once between moves to avoid redundant re-calcs and allocations
-  std::vector<HiveTile> tile_grid_;
   std::vector<HiveTile> played_tiles_;
-  std::vector<NeighbourList> neighbours_grid_;
-  std::array<bool, HiveTile::kNumTiles> pinned_tiles_;
   std::array<HivePosition, HiveTile::kNumTiles> tile_positions_;
 
   // there are max 6 tiles that can climb on the hive to cover a tile
@@ -704,7 +706,8 @@ class HiveBoard {
   HiveTile last_moved_;
   HivePosition last_moved_from_;
 
-  mutable std::vector<bool> visited_slides_;
+  bool fixed_orientation_;
+  ExpansionInfo expansions_;
 };
 
 }  // namespace hive
