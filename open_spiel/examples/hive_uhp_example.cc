@@ -30,7 +30,6 @@ namespace hive {
 
 
 
-
 } // namespace hive
 } // namespace open_spiel
 

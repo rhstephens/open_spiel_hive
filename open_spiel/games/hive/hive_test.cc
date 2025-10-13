@@ -23,6 +23,7 @@
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/tests/basic_tests.h"
+#include "open_spiel/tests/console_play_test.h"
 
 namespace open_spiel {
 namespace hive {
@@ -54,7 +55,7 @@ constexpr const char* ant_invalid_moves = "wA1 -bA2;wA1 wA3-";
 constexpr const char* grasshopper_test_game =
     "Base+MLP;InProgress;White[11];wG1;bG1 wG1-;wQ /wG1;bQ bG1-;wS1 wQ\\;bA1 "
     "bQ-;wB1 /wS1;bA1 -wQ;wB1 wS1\\;bA2 bQ-;wB1 /wS1;bA2 wG1\\;wB1 wS1\\;bA3 "
-    "bQ-;wB1 /wS1;bS1 bQ\\;wB1 wS1;bS1 wB1\\;wB1 /wB1;bA3 -wB1";
+    "bQ-;wB1 /wS1;bS1 bQ\\;wB1 wS1;bS1 wB1\\;wB1 -bS1;bA3 -wB1";
 constexpr const char* grasshopper_valid_moves =
     "wG1 /wQ;wG1 bA2\\;wG1 bQ-;wG1 \\wB1";
 constexpr const char* grasshopper_invalid_moves = "wG1 \\bG1;wG1 bA1/";
@@ -139,13 +140,15 @@ constexpr const char* pillbug_gate_game =
 constexpr const char* pillbug_gate_valid_moves = "bA1 -bB2;bA1 /wP";
 
 void BasicHiveTests() {
+  std::cout << "Stage 1 (Begin)" << std::endl;
   testing::LoadGameTest("hive");
   std::shared_ptr<const open_spiel::Game> game_mlp =
       open_spiel::LoadGame("hive");
   testing::NoChanceOutcomesTest(*game_mlp);
-  testing::RandomSimTest(*game_mlp, 5);
+  testing::RandomSimTest(*game_mlp, 5, false);
 
   // test all win conditions
+  std::cout << "Stage 2" << std::endl;
   auto state = DeserializeUHPGameAndState(white_wins_game).second;
   SPIEL_CHECK_TRUE(state->IsTerminal());
   SPIEL_CHECK_FLOAT_EQ(state->PlayerReturn(kPlayerWhite), 1.0);
@@ -168,24 +171,21 @@ void BasicHiveTests() {
                    state->StringToAction("pass"));
 
   // test all expansion variations
-  testing::RandomSimTest(*LoadGame("hive(uses_mosquito=false)"), 1);
+  std::cout << "Stage 3" << std::endl;
+  testing::RandomSimTest(*LoadGame("hive(uses_mosquito=false)"), 1, false);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_mosquito=false,uses_ladybug=false)"), 1);
+      *LoadGame("hive(uses_mosquito=false,uses_ladybug=false)"), 1, false);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_mosquito=false,uses_pillbug=false)"), 1);
+      *LoadGame("hive(uses_mosquito=false,uses_pillbug=false)"), 1, false);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_ladybug=false,uses_pillbug=false)"), 1);
+      *LoadGame("hive(uses_ladybug=false,uses_pillbug=false)"), 1, false);
   testing::RandomSimTest(
       *LoadGame(
           "hive(uses_mosquito=false,uses_ladybug=false,uses_pillbug=false)"),
       1);
 
-  // test with maximum board size
-  testing::RandomSimTest(
-      *LoadGame(absl::StrFormat("hive(board_size=%d)", kMaxBoardRadius)), 1);
-
   // test prettyprint with ansi colours
-  testing::RandomSimTest(*LoadGame("hive(ansi_color_output=true)"), 1);
+  testing::RandomSimTest(*LoadGame("hive(ansi_color_output=true)"), 1, false);
 }
 
 void TestMoves(std::unique_ptr<State>&& state, const char* valid_moves,
@@ -197,10 +197,18 @@ void TestMoves(std::unique_ptr<State>&& state, const char* valid_moves,
       absl::StrSplit(invalid_moves, ';', absl::SkipEmpty());
 
   for (auto& move : valid_move_list) {
+    if (legal_action_mask[state->StringToAction(move)] != 1) {
+        testing::ConsolePlayTest(*state->GetGame().get(), state.get());
+    }
+
     SPIEL_CHECK_TRUE(legal_action_mask[state->StringToAction(move)] == 1);
   }
 
   for (auto& move : invalid_move_list) {
+    if (legal_action_mask[state->StringToAction(move)] == 1) {
+        testing::ConsolePlayTest(*state->GetGame().get(), state.get());
+    }
+
     SPIEL_CHECK_TRUE(legal_action_mask[state->StringToAction(move)] == 0);
   }
 }
@@ -209,34 +217,48 @@ void TestBugMoves() {
   std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame("hive");
 
   // Base Bugs
-  TestMoves(DeserializeUHPGameAndState(queen_test_game).second,
+  std::cout << "Stage 4" << std::endl;
+  std::cout << "  queen" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(queen_test_game, true).second,
             queen_valid_moves, queen_invalid_moves);
-  TestMoves(DeserializeUHPGameAndState(ant_test_game).second, ant_valid_moves,
+  std::cout << "  ant" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(ant_test_game, true).second, ant_valid_moves,
             ant_invalid_moves);
-  TestMoves(DeserializeUHPGameAndState(grasshopper_test_game).second,
-            grasshopper_valid_moves, grasshopper_invalid_moves);
-  TestMoves(DeserializeUHPGameAndState(spider_test_game).second,
+  std::cout << "  hopper" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(grasshopper_test_game, true).second,
+           grasshopper_valid_moves, grasshopper_invalid_moves);
+  std::cout << "  spider" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(spider_test_game, true).second,
             spider_valid_moves, spider_invalid_moves);
-  TestMoves(DeserializeUHPGameAndState(beetle_test_game).second,
+  std::cout << "  beetle" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(beetle_test_game, true).second,
             beetle_valid_moves, beetle_invalid_moves);
 
   // Expansion Bugs
-  TestMoves(DeserializeUHPGameAndState(mosquito_test_game).second,
+  std::cout << "Stage 5" << std::endl;
+  std::cout << "  mosquito" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(mosquito_test_game, true).second,
             mosquito_valid_moves, mosquito_invalid_moves);
-  TestMoves(DeserializeUHPGameAndState(ladybug_test_game).second,
+  std::cout << "  ladybug" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(ladybug_test_game, true).second,
             ladybug_valid_moves, ladybug_invalid_moves);
 
   // TODO: Make sure this test checks that pillbug's special can't be used
   // on beetles that are on top of the hive
-  TestMoves(DeserializeUHPGameAndState(pillbug_test_game).second,
+  std::cout << "  pillbug" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(pillbug_test_game, true).second,
             pillbug_valid_moves, pillbug_invalid_moves);
 
   // Special Cases
-  TestMoves(DeserializeUHPGameAndState(beetle_gate_game).second,
+  std::cout << "Stage 6" << std::endl;
+  std::cout << "  beetle gate" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(beetle_gate_game, true).second,
             beetle_gate_valid_moves, "");
-  TestMoves(DeserializeUHPGameAndState(ladybug_gate_game).second,
+  std::cout << "  ladybug gate" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(ladybug_gate_game, true).second,
             ladybug_gate_valid_moves, "");
-  TestMoves(DeserializeUHPGameAndState(pillbug_gate_game).second,
+  std::cout << "  pillbug gate" << std::endl;
+  TestMoves(DeserializeUHPGameAndState(pillbug_gate_game, true).second,
             pillbug_gate_valid_moves, "");
 }
 

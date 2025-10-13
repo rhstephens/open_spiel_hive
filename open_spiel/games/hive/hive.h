@@ -82,11 +82,11 @@ namespace hive {
 
 // There are 28 unique tiles and 7 directions a tile can be placed beside (the 6
 // hexagonal edges and "above"). So the total action space is 28 * 28 * 7 = 5488
-inline constexpr int kNumDistinctActions = 5488 + 1;  // +1 for pass
+// inline constexpr int kNumDistinctActions = 5488 + 1;  // +1 for pass
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kNumBaseBugTypes = 5;
 inline constexpr int kMaxGameLength = 1000;
-inline constexpr int kBranchingFactor = 100; // ~approximate average
+inline constexpr int kBranchingFactor = 80; // ~approximate average
 inline constexpr const char* kUHPNotStarted = "NotStarted";
 inline constexpr const char* kUHPInProgress = "InProgress";
 inline constexpr const char* kUHPWhiteWins = "WhiteWins";
@@ -112,13 +112,14 @@ class HiveState : public State {
   // pretty prints the board state when using ansi_color_output_, and
   // prints the UHP string representation otherwise
   std::string ToString() const override;
+  std::string PrintBoard(HiveTile tile_to_show_moves = HiveTile::kNoneTile) const;
 
   std::string ActionToString(Player player, Action action_id) const override;
   Action StringToAction(Player player,
                         const std::string& move_str) const override;
 
   bool IsTerminal() const override {
-    return WinConditionMet(kPlayerWhite) || WinConditionMet(kPlayerBlack) ||
+    return Board().WinConditionMet(kPlayerWhite) || Board().WinConditionMet(kPlayerBlack) ||
            MoveNumber() >= game_->MaxGameLength() || force_terminal_;
   }
   std::vector<double> Returns() const override;
@@ -163,10 +164,6 @@ class HiveState : public State {
   Action MoveToAction(Move move) const;
   Action PassAction() const { return NumDistinctActions() - 1; }
 
-  inline bool WinConditionMet(Player player) const {
-    return Board().IsQueenSurrounded(OtherColour(PlayerToColour(player)));
-  }
-
  protected:
   void DoApplyAction(Action action) override;
 
@@ -176,9 +173,16 @@ class HiveState : public State {
 
   // an axial coordinate at position (q, r) is stored at index [r][q] after
   // translating the axial coordinate by the length of the radius
-  inline std::array<int, 2> AxialToTensorIndices(HivePosition pos) const {
-    return {pos.R() + HiveBoard::kBoardDims / 2,
-            pos.Q() + HiveBoard::kBoardDims / 2};
+  // inline std::array<int, 2> AxialToTensorIndices(HivePosition pos) const {
+  //   return {pos.R() + HiveBoard::kBoardDims / 2,
+  //           pos.Q() + HiveBoard::kBoardDims / 2};
+  // }
+
+  size_t AxialToPosition(int q, int r) const {
+    // For a flat-topped hex grid with the given neighbor offsets:
+    // NE: kBoardDims + 1, E: 1, SE: -kBoardDims, SW: -kBoardDims - 1, W: -1, NW: kBoardDims
+    
+    return HiveBoard::kStartPos + q - r * HiveBoard::kBoardDims;
   }
 
   Player current_player_ = kPlayerWhite;
@@ -197,7 +201,7 @@ class HiveGame : public Game {
   std::array<int, 3> ActionsShape() const { return {7, 28, 28}; }
   int NumDistinctActions() const override { return kNumDistinctActions; }
   inline std::unique_ptr<State> NewInitialState() const override {
-    return std::make_unique<HiveState>(shared_from_this(), board_radius_,
+    return std::make_unique<HiveState>(shared_from_this(),
                                        expansions_, num_bug_types_,
                                        ansi_color_output_, fixed_orientation_);
   }
@@ -232,7 +236,7 @@ class HiveGame : public Game {
 
 // helper to construct a game and state from a properly formed UHP string
 std::pair<std::shared_ptr<const Game>, std::unique_ptr<State>>
-DeserializeUHPGameAndState(const std::string& uhp_string);
+DeserializeUHPGameAndState(const std::string& uhp_string, bool pretty_print = false);
 
 }  // namespace hive
 }  // namespace open_spiel

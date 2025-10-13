@@ -40,10 +40,12 @@ if(NOT BUILD_TYPE)
 endif()
 message("${BoldYellow}Current build type is: ${BUILD_TYPE}${ColourReset}")
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2 -march=native")
+
 if(${BUILD_TYPE} STREQUAL "Debug")
   # Basic build for debugging (default).
   # -Og enables optimizations that do not interfere with debugging.
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -Og -gdwarf-4")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-inline -ggdb -g -O0 -gdwarf-4")
 endif()
 
 if(${BUILD_TYPE} STREQUAL "Testing")

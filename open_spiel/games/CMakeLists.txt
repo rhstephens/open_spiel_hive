@@ -100,6 +100,8 @@ set(GAME_SOURCES
   hive/hive.h
   hive/hive_board.cc
   hive/hive_board.h
+  hive/hive_bitboard.h
+  hive/hive_parallel_bitboard.h
   kriegspiel/kriegspiel.cc
   kriegspiel/kriegspiel.h
   kuhn_poker/kuhn_poker.cc
@@ -485,6 +487,10 @@ add_test(hex_test hex_test)
 add_executable(hive_test hive/hive_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(hive_test hive_test)
+
+add_executable(parallel_bitboard_test hive/parallel_bitboard_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(parallel_bitboard_test parallel_bitboard_test)
 
 add_executable(kriegspiel_test kriegspiel/kriegspiel_test.cc ${OPEN_SPIEL_OBJECTS}
         $<TARGET_OBJECTS:tests>)

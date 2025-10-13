@@ -34,7 +34,7 @@ namespace testing {
 // as the key. If the bots map remains null, then there are no bots and play
 // is entirely guided by the console.
 void ConsolePlayTest(
-    const Game& game, const State* start_state = nullptr,
+    const Game& game, State* start_state = nullptr,
     const std::vector<Action>* start_history = nullptr,
     const std::unordered_map<Player, std::unique_ptr<Bot>>* bots = nullptr);
 

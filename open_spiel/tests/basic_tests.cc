@@ -27,6 +27,7 @@
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_globals.h"
 #include "open_spiel/spiel_utils.h"
+#include "open_spiel/tests/console_play_test.h"
 
 namespace open_spiel {
 namespace testing {
@@ -36,6 +37,20 @@ namespace {
 constexpr int kInvalidHistoryPlayer = -300;
 constexpr int kInvalidHistoryAction = -301;
 constexpr double kRewardEpsilon = 1e-9;
+
+State* cur_state = nullptr;
+void PlaytestErrorHandler(const std::string& error_msg) {
+  std::cerr << "Spiel Fatal Error: " << error_msg << std::endl
+            << std::endl
+            << std::flush;
+  if (cur_state != nullptr) {
+    ConsolePlayTest(*cur_state->GetGame().get(), cur_state);
+  } else {
+    exit(-1);
+  }
+}
+
+
 
 // Information about the simulation history. Used to track past states and
 // actions for rolling back simulations via UndoAction, and check History.
@@ -346,6 +361,7 @@ void RandomSimulation(std::mt19937* rng, const Game& game, bool undo,
 
   while (!state->IsTerminal()) {
     state_checker_fn(*state);
+    cur_state = state.get();
 
     if (verbose) {
       std::cout << "player " << state->CurrentPlayer() << std::endl;
@@ -536,7 +552,9 @@ void RandomSimTest(const Game& game, int num_sims, bool serialize, bool verbose,
                    const std::function<void(const State&)>& state_checker_fn,
                    int mean_field_population,
                    std::shared_ptr<Observer> observer) {
-  std::mt19937 rng;
+  std::mt19937 rng(absl::ToUnixMillis(absl::Now()));
+
+  SetErrorHandler(PlaytestErrorHandler);
   if (verbose) {
     std::cout << "\nRandomSimTest, game = " << game.GetType().short_name
               << ", num_sims = " << num_sims << std::endl;
