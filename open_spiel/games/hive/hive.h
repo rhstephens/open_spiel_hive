@@ -173,10 +173,10 @@ class HiveState : public State {
 
   // an axial coordinate at position (q, r) is stored at index [r][q] after
   // translating the axial coordinate by the length of the radius
-  // inline std::array<int, 2> AxialToTensorIndices(HivePosition pos) const {
-  //   return {pos.R() + HiveBoard::kBoardDims / 2,
-  //           pos.Q() + HiveBoard::kBoardDims / 2};
-  // }
+  inline std::array<size_t, 2> AxialToTensorIndices(size_t pos) const {
+    return {pos / HiveBoard::kBoardDims,
+            pos % HiveBoard::kBoardDims};
+  }
 
   size_t AxialToPosition(int q, int r) const {
     // For a flat-topped hex grid with the given neighbor offsets:
@@ -212,12 +212,9 @@ class HiveGame : public Game {
 
   std::vector<int> ObservationTensorShape() const override {
     return {num_bug_types_ * kNumPlayers  // 2 * the # of bug types in play
-                + 2                       // articulation point planes
-                + 2                       // placeability planes
-                + 2                       // covered planes
                 + 1,                      // player turn plane
-            2 * board_radius_ + 1,  // dimensions of a sq board from hex board
-            2 * board_radius_ + 1};
+            HiveBoard::kBoardDims,
+            HiveBoard::kBoardDims};
   }
 
   int MaxGameLength() const override { return kMaxGameLength; }
@@ -227,7 +224,6 @@ class HiveGame : public Game {
   ExpansionInfo GetExpansionInfo() const { return expansions_; }
 
  private:
-  int board_radius_;
   int num_bug_types_;
   bool ansi_color_output_;
   bool fixed_orientation_;

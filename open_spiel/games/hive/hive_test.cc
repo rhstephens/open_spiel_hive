@@ -18,12 +18,14 @@
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_format.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_join.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_split.h"
 #include "open_spiel/games/hive/hive_board.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/tests/basic_tests.h"
 #include "open_spiel/tests/console_play_test.h"
+#include "open_spiel/utils/file.h"
 
 namespace open_spiel {
 namespace hive {
@@ -139,13 +141,16 @@ constexpr const char* pillbug_gate_game =
     "/wP;bA1 bQ/;wQ wP\\;bA1 -bQ;wQ /wP;bB2 \\bQ;wQ wP\\;bB2 bQ;bA1 -wP;bB1 wQ";
 constexpr const char* pillbug_gate_valid_moves = "bA1 -bB2;bA1 /wP";
 
+// constexpr const char* expert_games_file = "open_spiel/games/hive/expert_games.txt";
+constexpr const char* expert_games_file = "open_spiel/games/hive/expert_games.txt";
+
 void BasicHiveTests() {
   std::cout << "Stage 1 (Begin)" << std::endl;
   testing::LoadGameTest("hive");
   std::shared_ptr<const open_spiel::Game> game_mlp =
-      open_spiel::LoadGame("hive");
+      open_spiel::LoadGame("hive(ansi_color_output=true)");
   testing::NoChanceOutcomesTest(*game_mlp);
-  testing::RandomSimTest(*game_mlp, 5, false);
+  testing::RandomSimTest(*game_mlp, 5);
 
   // test all win conditions
   std::cout << "Stage 2" << std::endl;
@@ -172,20 +177,20 @@ void BasicHiveTests() {
 
   // test all expansion variations
   std::cout << "Stage 3" << std::endl;
-  testing::RandomSimTest(*LoadGame("hive(uses_mosquito=false)"), 1, false);
+  testing::RandomSimTest(*LoadGame("hive(uses_mosquito=false)"), 1);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_mosquito=false,uses_ladybug=false)"), 1, false);
+      *LoadGame("hive(uses_mosquito=false,uses_ladybug=false)"), 1);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_mosquito=false,uses_pillbug=false)"), 1, false);
+      *LoadGame("hive(uses_mosquito=false,uses_pillbug=false)"), 1);
   testing::RandomSimTest(
-      *LoadGame("hive(uses_ladybug=false,uses_pillbug=false)"), 1, false);
+      *LoadGame("hive(uses_ladybug=false,uses_pillbug=false)"), 1);
   testing::RandomSimTest(
       *LoadGame(
           "hive(uses_mosquito=false,uses_ladybug=false,uses_pillbug=false)"),
       1);
 
   // test prettyprint with ansi colours
-  testing::RandomSimTest(*LoadGame("hive(ansi_color_output=true)"), 1, false);
+  testing::RandomSimTest(*LoadGame("hive(ansi_color_output=true)"), 1);
 }
 
 void TestMoves(std::unique_ptr<State>&& state, const char* valid_moves,
@@ -260,6 +265,31 @@ void TestBugMoves() {
   std::cout << "  pillbug gate" << std::endl;
   TestMoves(DeserializeUHPGameAndState(pillbug_gate_game, true).second,
             pillbug_gate_valid_moves, "");
+
+    std::shared_ptr<const open_spiel::Game> game_mlp =
+      open_spiel::LoadGame("hive");
+
+}
+
+
+void TestExpertGames() {
+  std::vector<std::string> expert_games;
+  expert_games = absl::StrSplit(file::ReadContentsFromFile(expert_games_file, "r"), '\n');
+  expert_games.pop_back(); // remove last empty string
+
+  for (std::string& game : expert_games) {
+    std::unique_ptr<State> end_state = DeserializeUHPGameAndState(game).second;
+    SPIEL_CHECK_TRUE(end_state->IsTerminal());
+
+    double p1_return = end_state->PlayerReturn(0);
+    if (p1_return == 1.0f) {
+      SPIEL_CHECK_TRUE(absl::StrContains(game, "WhiteWins"));
+    } else if (p1_return == -1.0f) {
+      SPIEL_CHECK_TRUE(absl::StrContains(game, "BlackWins"));
+    } else {
+      SPIEL_CHECK_TRUE(absl::StrContains(game, "Draw"));
+    }
+  }
 }
 
 }  // namespace
@@ -270,4 +300,5 @@ int main(int argc, char** argv) {
   // TODO: perft()
   open_spiel::hive::BasicHiveTests();
   open_spiel::hive::TestBugMoves();
+  open_spiel::hive::TestExpertGames();
 }

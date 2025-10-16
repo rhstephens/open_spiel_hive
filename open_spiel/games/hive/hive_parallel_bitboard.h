@@ -206,8 +206,11 @@ class HexBitboard32x32 {
 
   // Checks if any bits are set
   bool any() const {
-    for (size_t idx = 0; idx < __num_words; ++idx) {
-      if (data_[idx] != 0) {
+    int idx = 0;
+
+    for (; idx + 7 < __num_words; idx += 8) {
+      __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data_ + idx));
+      if (!_mm256_testz_si256(v, v)) {
         return true;
       }
     }
@@ -406,6 +409,17 @@ class HexBitboard32x32 {
     return result;
   }
 
+  template<typename Func>
+  void for_each_set_bit(Func&& f) const {
+    for (int idx = 0; idx < __num_words; ++idx) {
+      uint32_t word = data_[idx];
+      while (word != 0) {
+        f(idx * __word_size + __builtin_ctz(word));
+        word &= word - 1;
+      }
+    }
+  }
+
   // Does this board contain "pattern" as a subset?
   bool contains_pattern(const HexBitboard32x32& pattern) {
     // TODO: Implement stub
@@ -477,7 +491,7 @@ class HexBitboard32x32 {
 
   // Copy of bitboard with each word shifted down "shift" # of rows
   HexBitboard32x32 shift_down(int shift = 1) const {
-    HexBitboard32x32 result = *this;
+    HexBitboard32x32 result{};
     std::memcpy(result.data_, data_ + shift, (__num_words - shift) * sizeof(uint32_t));
     
     return result;

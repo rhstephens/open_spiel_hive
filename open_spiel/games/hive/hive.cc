@@ -62,10 +62,6 @@ const GameType kGameType{/*short_name=*/"hive",
                          /*provides_observation_tensor=*/true,
                          /*parameter_specification=*/
                          {
-                             // the radius of the underlying hexagonal grid.
-                             // customisable to reduce computational complexity
-                             // where needed. Max size of 14.
-                             {"board_size", GameParameter(14)},
                              // expansion pieces, included by default
                              {"uses_mosquito", GameParameter(true)},
                              {"uses_ladybug", GameParameter(true)},
@@ -124,7 +120,6 @@ std::string HiveState::PrintBoard(HiveTile tile_to_show_moves /*= HiveTile::kNon
     std::bitset<kNumDistinctActions> actions{};
     std::vector<Move> moves{};
     
-
     Board().GenerateMovesFor(actions, tile_to_show_moves, tile_to_show_moves.GetBugType(), PlayerToColour(CurrentPlayer()));
     for (size_t idx = actions._Find_first(); idx < actions.size(); idx = actions._Find_next(idx)) {
       moves.push_back(ActionToMove(idx));
@@ -170,7 +165,7 @@ std::string HiveState::PrintBoard(HiveTile tile_to_show_moves /*= HiveTile::kNon
         }
 
         std::string uhp = tile.ToUHP();
-        if (Board().GetTileHeight(tile) > 1) {
+        if (Board().GetStackHeight(tile) > 1) {
           uhp = absl::StrCat("^", uhp);
           top_tiles.push_back(tile);
         }
@@ -256,18 +251,18 @@ std::string HiveState::PrintBoard(HiveTile tile_to_show_moves /*= HiveTile::kNon
   }
 
   // print bug stacks
-  // for (auto tile : top_tiles) {
-  //   absl::StrAppend(&string, tile.ToUHP());
+  for (auto tile : top_tiles) {
+    absl::StrAppend(&string, tile.ToUHP());
 
-  //   HiveTile below = Board().GetTileUnderneath(tile);
-  //   while (below.HasValue()) {
-  //     absl::StrAppend(&string, " > ", below.ToUHP());
+    HiveTile below = Board().GetTileUnderneath(tile);
+    while (below.HasValue()) {
+      absl::StrAppend(&string, " > ", below.ToUHP());
 
-  //     below = Board().GetTileUnderneath(below);
-  //   }
+      below = Board().GetTileUnderneath(below);
+    }
 
-  //   absl::StrAppend(&string, "\n");
-  // }
+    absl::StrAppend(&string, "\n");
+  }
 
   return string;
 }
@@ -291,8 +286,7 @@ Action HiveState::StringToAction(Player player,
   // first bug should always be valid
   move.from = HiveTile::UHPToTile(bugs[0]);
   if (!move.from.HasValue()) {
-    SpielFatalError("HiveState::StringToAction() - invalid move string: " +
-                    move_str);
+    return kInvalidAction;
   }
 
   // special case: if only one bug is provided, it is a 1st turn move
@@ -367,69 +361,44 @@ void HiveState::ObservationTensor(Player player,
 
 
   // starting indices for each 2D feature plane, variable based on expansions
-  // const int articulation_idx = num_bug_types_ * num_players_;
-  // const int placeable_idx = articulation_idx + 2;
-  // const int covered_idx = placeable_idx + 2;
-  // const int turn_idx = covered_idx + 2;
+  const int turn_plane_idx = num_bug_types_ * num_players_;
 
-  // // Treat values as a 3d-tensor, where each feature plane has square dimensions
-  // // (radius * 2 + 1) x (radius * 2 + 1), and contains one-hot encodings of the
-  // // current board state
+  // Treat values as a 3d-tensor, where each feature plane has square dimensions
+  // (radius * 2 + 1) x (radius * 2 + 1), and contains one-hot encodings of the
+  // current board state
 
-  // // #PERF: TensorView is making many calls to __memset when "reset" is set to
-  // // true on TensorView constructor init
-  // TensorView<3> view(values,
-  //                    {game_->ObservationTensorShape()[0],
-  //                     Board().SquareDimensions(), Board().SquareDimensions()},
-  //                    false);
+  // #PERF: TensorView is making many calls to __memset when "reset" is set to
+  // true on TensorView constructor init
+  TensorView<3> view(values,
+                     {game_->ObservationTensorShape()[0],
+                      game_->ObservationTensorShape()[1],
+                      game_->ObservationTensorShape()[2]
+                     },
+                     true);
 
-  // int plane_idx = 0;
-  // Colour my_colour = PlayerToColour(player);
-  // Colour opposing_colour = OtherColour(my_colour);
+  int plane_idx = 0;
+  Colour my_colour = PlayerToColour(player);
+  Colour opposing_colour = OtherColour(my_colour);
 
-  // // populate all planes that reference a tile in play
-  // for (auto tile : Board().GetPlayedTiles()) {
-  //   HivePosition pos = Board().GetPositionOf(tile);
-  //   std::array<int, 2> indices = AxialToTensorIndices(pos);
-  //   bool is_opposing = tile.GetColour() == opposing_colour;
+  // populate all planes that reference a tile in play
+  for (HiveTile tile : Board().GetPlayedTiles()) {
+    size_t pos = Board().GetPositionOf(tile);
+    int row = pos / HiveBoard::kBoardDims;
+    int col = pos % HiveBoard::kBoardDims;
+    bool is_opposing = tile.GetColour() == opposing_colour;
 
-  //   // bug type planes
-  //   plane_idx = BugTypeToTensorIndex(tile.GetBugType()) +
-  //               (is_opposing ? num_bug_types_ : 0);
-  //   view[{plane_idx, indices[0], indices[1]}] = 1.0f;
+    // bug type planes
+    plane_idx = BugTypeToTensorIndex(tile.GetBugType()) +
+                (is_opposing ? num_bug_types_ : 0);
+    view[{plane_idx, row, col}] = 1.0f;
+  }
 
-  //   // pinned plane
-  //   plane_idx = articulation_idx + (is_opposing ? 1 : 0);
-  //   if (Board().IsPinned(pos)) {
-  //     view[{plane_idx, indices[0], indices[1]}] = 1.0f;
-  //   }
-
-  //   // covered plane
-  //   plane_idx = covered_idx + (is_opposing ? 1 : 0);
-  //   if (Board().IsCovered(tile)) {
-  //     view[{plane_idx, indices[0], indices[1]}] = 1.0f;
-  //   }
-  // }
-
-  // // populate all planes that reference a specific position
-  // int radius = Board().Radius();
-  // for (int r = -radius; r <= radius; ++r) {
-  //   for (int q = -radius; q <= radius; ++q) {
-  //     HivePosition pos = {q, r, 0};
-  //     std::array<int, 2> indices = AxialToTensorIndices(pos);
-
-  //     // current player's turn
-  //     view[{turn_idx, indices[0], indices[1]}] =
-  //         static_cast<float>(current_player_);
-
-  //     // player and opponent's placeable positions
-  //     if (Board().IsPlaceable(my_colour, pos)) { // #PERF
-  //       view[{placeable_idx, indices[0], indices[1]}] = 1.0f;
-  //     } else if (Board().IsPlaceable(opposing_colour, pos)) { // #PERF
-  //       view[{placeable_idx + 1, indices[0], indices[1]}] = 1.0f;
-  //     }
-  //   }
-  // }
+  // fill player turn plane
+  if (player != CurrentPlayer()) {
+    const int board_size = HiveBoard::kBoardDims * HiveBoard::kBoardDims;
+    const int offset = turn_plane_idx * board_size;
+    std::fill(values.begin() + offset, values.begin() + offset + board_size, 1.0f);
+  }
 }
 
 std::unique_ptr<State> HiveState::Clone() const {
@@ -448,8 +417,20 @@ std::vector<Action> HiveState::LegalActions() const {
   actions.reserve(legal_actions.count());
 
   // fast conversion from bitset to vector as looping results in high perf hit
-  for (size_t idx = legal_actions._Find_first(); idx < kNumDistinctActions; idx = legal_actions._Find_next(idx)) {
-    actions.push_back(idx);
+  // for (size_t idx = legal_actions._Find_first(); idx < kNumDistinctActions; idx = legal_actions._Find_next(idx)) {
+  //   actions.push_back(idx);
+  // }
+
+  const uint64_t* words = reinterpret_cast<const uint64_t*>(&legal_actions);
+  const size_t num_words = (kNumDistinctActions + 63) / 64;
+
+  for (size_t word_idx = 0; word_idx < num_words; ++word_idx) {
+    uint64_t word = words[word_idx];
+    while (word) {
+      // Get lowest set bit
+      actions.push_back(word_idx * 64 + __builtin_ctzll(word));
+      word &= (word - 1);  // Clear lowest set bit
+    }
   }
 
   // if a player has no legal actions, then they must pass
@@ -481,12 +462,6 @@ Move HiveState::ActionToMove(Action action) const {
   int64_t direction = action % Direction::kNumAllDirections;
   int64_t to = (action / Direction::kNumAllDirections) % HiveTile::kNumTiles;
   int64_t from = action / (HiveTile::kNumTiles * Direction::kNumAllDirections);
-
-  // special case: for the first turn actions, they are encoded as playing a
-  // tile on top of itself. In this case, we want "to" to be kNoneTile
-  // if (from == to && direction == Direction::kAbove) {
-  //   to = HiveTile::kNoneTile;
-  // }
 
   return Move{from, to, static_cast<Direction>(direction)};
 }
@@ -571,7 +546,6 @@ void HiveState::DoApplyAction(Action action) {
     bool success = Board().ApplyMove(ActionToMove(action));
 
     // if something has gone wrong, force end the game as a draw
-    // (should only happen with with reduced board_sizes that go out of bounds)
     if (!success) {
       force_terminal_ = true;
     }
@@ -582,7 +556,6 @@ void HiveState::DoApplyAction(Action action) {
 
 HiveGame::HiveGame(const GameParameters& params)
     : Game(kGameType, params),
-      board_radius_(ParameterValue<int>("board_size")),
       num_bug_types_(kNumBaseBugTypes),
       ansi_color_output_(ParameterValue<bool>("ansi_color_output")),
       fixed_orientation_(ParameterValue<bool>("fixed_orientation")),
@@ -628,7 +601,12 @@ std::unique_ptr<State> HiveGame::DeserializeState(
 
   // skip tokens[2] (turn string) as it is implicitly derived from the actions
   for (int i = 3; i < tokens.size(); ++i) {
-    state->ApplyAction(state->StringToAction(std::string(tokens[i])));
+    std::vector<Action> legal_actions = state->LegalActions();
+    Action action_id = state->StringToAction(std::string(tokens[i]));
+    if (absl::c_find(legal_actions, action_id) == legal_actions.end()) {
+      std::cout << state->Serialize() << std::endl;
+    }
+    state->ApplyActionWithLegalityCheck(state->StringToAction(std::string(tokens[i])));
   }
 
   // now verify state string (tokens[1])

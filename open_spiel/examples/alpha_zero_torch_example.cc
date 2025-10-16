@@ -26,7 +26,7 @@
 #include "open_spiel/utils/json.h"
 #include "open_spiel/utils/thread.h"
 
-ABSL_FLAG(std::string, game, "hive(board_size=14,fixed_orientation=true)", "The name of the game to play.");
+ABSL_FLAG(std::string, game, "hive()", "The name of the game to play.");
 ABSL_FLAG(std::string, path, "./training/az", "Path to store model/logs/train data etc.");
 ABSL_FLAG(std::string, graph_def, "",
           ("Where to get the graph. This could be from export_model.py, or "

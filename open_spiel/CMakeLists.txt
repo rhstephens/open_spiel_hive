@@ -52,7 +52,7 @@ if(${BUILD_TYPE} STREQUAL "Testing")
   # A build used for running tests: keep all runtime checks (assert,
   # SPIEL_CHECK_*, SPIEL_DCHECK_*), but turn on some speed optimizations,
   # otherwise tests run for too long.
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g")
 endif()
 
 if(${BUILD_TYPE} STREQUAL "Release")

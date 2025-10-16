@@ -27,8 +27,9 @@
 #include "open_spiel/abseil-cpp/absl/time/clock.h"
 #include "open_spiel/abseil-cpp/absl/time/time.h"
 #include "open_spiel/algorithms/mcts.h"
+#include "open_spiel/bots/human/human_bot.h"
 #include "open_spiel/spiel.h"
-#include "open_spiel/spiel_utils.h"
+#include "open_spiel/spiel.h"
 
 ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
 ABSL_FLAG(std::string, player1, "mcts", "Who controls player1.");
@@ -63,6 +64,11 @@ std::unique_ptr<open_spiel::Bot> InitBot(
         absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), Seed(),
         absl::GetFlag(FLAGS_verbose));
   }
+
+   if (type == "human") {
+    return std::make_unique<open_spiel::HumanBot>();
+   }
+
   open_spiel::SpielFatalError("Bad player type. Known types: mcts, random");
 }
 

@@ -100,7 +100,6 @@ set(GAME_SOURCES
   hive/hive.h
   hive/hive_board.cc
   hive/hive_board.h
-  hive/hive_bitboard.h
   hive/hive_parallel_bitboard.h
   kriegspiel/kriegspiel.cc
   kriegspiel/kriegspiel.h

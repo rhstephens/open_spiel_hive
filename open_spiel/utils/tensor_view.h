@@ -34,7 +34,7 @@ class TensorView {
   constexpr TensorView(absl::Span<float> values,
                        const std::array<int, Rank>& shape, bool reset)
       : values_(values), shape_(shape) {
-    SPIEL_CHECK_EQ(size(), values_.size());
+    SPIEL_DCHECK_EQ(size(), values_.size());
     if (reset) std::fill(values.begin(), values.end(), 0);
   }
 

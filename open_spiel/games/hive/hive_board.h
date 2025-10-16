@@ -37,7 +37,6 @@ namespace hive {
   // TODO: put this back in hive.h or a global header
 inline constexpr int kNumDistinctActions = 5488 + 1;  // +1 for pass
 
-
 enum class BugType : uint8_t {
   kQueen = 0,
   kAnt,
@@ -84,6 +83,15 @@ inline constexpr std::array<int, static_cast<int>(BugType::kNumBugTypes)>
 inline constexpr Player kPlayerWhite = 0;
 inline constexpr Player kPlayerBlack = 1;
 
+inline constexpr std::array<Direction, Direction::kNumCardinalDirections> kOppositeDirection {
+  Direction::kSW,
+  Direction::kW,
+  Direction::kNW,
+  Direction::kNE,
+  Direction::kE,
+  Direction::kSE
+};
+
 inline Player OtherPlayer(Player p) {
   SPIEL_DCHECK_TRUE(p != kInvalidPlayer);
   return p == kPlayerWhite ? kPlayerBlack : kPlayerWhite;
@@ -96,11 +104,6 @@ inline Colour OtherColour(Colour c) {
 inline Colour PlayerToColour(Player p) {
   SPIEL_DCHECK_TRUE(p != kInvalidPlayer);
   return p == kPlayerWhite ? Colour::kWhite : Colour::kBlack;
-}
-
-inline Direction OppositeDirection(uint8_t in) {
-  SPIEL_DCHECK_TRUE(in < Direction::kNumCardinalDirections);
-  return static_cast<Direction>((in + 3) % Direction::kNumCardinalDirections);
 }
 
 inline Direction ClockwiseDirection(uint8_t in) {
@@ -395,7 +398,6 @@ class HiveTile {
   Value tile_name_;
 };
 
-
 inline Action GenerateAction(HiveTile from, HiveTile to, size_t dir) {
   return (from * HiveTile::kNumTiles * Direction::kNumAllDirections) +
          (to * Direction::kNumAllDirections) +
@@ -484,52 +486,52 @@ class HiveBoard {
       kBoardDims        // NW
     };
 
-  // kGateOffsets[dir] return the two indice offsets that must be checked in
-  // order to slide from the current position in direction dir
-  static constexpr std::array<std::pair<int, int>, Direction::kNumCardinalDirections>
-    kGateOffsets = {{
-      {kNeighbourOffsets[kNW], kNeighbourOffsets[kE]},      // NE
-      {kNeighbourOffsets[kNE], kNeighbourOffsets[kSE]},     // E
-      {kNeighbourOffsets[kE], kNeighbourOffsets[kSW]},      // SE
-      {kNeighbourOffsets[kSE], kNeighbourOffsets[kW]},      // SW
-      {kNeighbourOffsets[kSW], kNeighbourOffsets[kNW]},     // W
-      {kNeighbourOffsets[kW], kNeighbourOffsets[kNE]}       // NW
-    }};
-
-  using GateMask = std::array<std::array<HexBitboard32x32, HiveBoard::kNumCells>,
-                              Direction::kNumCardinalDirections>;
-
   // kNeighbourMasks at index [pos] contains a bitboard with the neighbours of pos
   static const std::array<HexBitboard32x32, kNumCells> kNeighbourMasks;
   static const std::array<std::array<size_t, Direction::kNumCardinalDirections>, kNumCells>
     kNeighbourIterators;
 
+  // Boolean flags
+  enum TileFlags : uint8_t {
+    kPinned =   1 << 0,
+    kCovered =  1 << 1,
+    kInPlay =   1 << 2,
+    // bits 4-7 reserved for stack height
+  };
 
-  // TODO: use this inside of IsGated()
-  // kGateMasks at index [dir][pos] contains a bitboard with the clockwise and
-  // counterclockwise adjacent neighbours of pos in direction dir
-  static const GateMask kGateMasks;
+  static constexpr uint8_t kStackHeightMask = 0xF0;
+  static constexpr uint8_t kStackHeightShift = 4;
 
-  struct Offset {
-    int row_offset;
-    int col_offset;
+  bool IsPinned(HiveTile tile) const { return (tile_flags_[tile] & kPinned) && GetStackHeight(tile) <= 1; }
+  bool IsCovered(HiveTile tile) const { return (tile_flags_[tile] & kCovered); }
+  bool IsInPlay(HiveTile tile) const { return (tile_flags_[tile] & kInPlay); }
+  int GetStackHeight(HiveTile tile) const { return (tile_flags_[tile] & kStackHeightMask) >> kStackHeightShift; }
 
-    constexpr Offset(int row, int col) : row_offset(row), col_offset(col) {}
-
-    // TODO: consider not having this magic type deduction
-    constexpr operator size_t() {
-      return col_offset + row_offset * kBoardDims;
+  void SetPinned(HiveTile tile, bool pinned) {
+    if (pinned) {
+      tile_flags_[tile] |= kPinned;
+    } else {
+      tile_flags_[tile] &= ~kPinned;
     }
-  };
+  }
 
-  // pairs a covered tile with the height its at on the stack (0 == ground)
-  struct CoveredTile {
-    HiveTile tile{};
-    int stack_height{};
+  void SetCovered(HiveTile tile, bool covered) {
+    if (covered) {
+      tile_flags_[tile] |= kCovered;
+    } else {
+      tile_flags_[tile] &= ~kCovered;
+    }
+  }
 
-    // searchable by tile only
+  void SetInPlay(HiveTile tile) {
+    tile_flags_[tile] |= kInPlay;
+  }
 
-  };
+  void SetStackHeight(HiveTile tile, uint8_t height) {
+    // Clear old height, set new height
+    tile_flags_[tile] = (tile_flags_[tile] & ~kStackHeightMask) | 
+                        ((height << kStackHeightShift) & kStackHeightMask);
+  }
 
   // ctor
   HiveBoard(ExpansionInfo expansions, bool fixed_orientation);
@@ -542,9 +544,11 @@ class HiveBoard {
   // this is separated out to allow pillbug/mosquito to directly generate Moves
   void GenerateMovesFor(std::bitset<kNumDistinctActions>& out, HiveTile to_move, BugType acting_type, Colour to_play) const;
 
+  const std::vector<HiveTile>& GetPlayedTiles() const { return played_tiles_; }
+
   size_t GetPositionOf(HiveTile tile) const { return tile_positions_[tile]; }
   HiveTile GetTopTileAt(size_t pos) const { return tile_grid_[pos]; }
-  int GetTileHeight(HiveTile tile) const { return tile_stack_heights_[tile]; }
+  // int GetTileHeight(HiveTile tile) const { return tile_stack_heights_[tile]; }
   HiveTile GetTileUnderneath(HiveTile tile) const { 
     for (int i = covered_tiles_.size() - 1; i >= 0; --i) {
       if (tile == covered_tiles_[i].second) {
@@ -569,10 +573,10 @@ class HiveBoard {
 
   // Check if a Beetle can climb from top of position pos in direction dir
   bool IsBeetleGated(size_t pos, Direction dir) const {
-    int from_stack_height = GetTileHeight(GetTopTileAt(pos));
-    int to_stack_height = 1 + GetTileHeight(GetTopTileAt(pos + kNeighbourOffsets[dir]));
-    int cw_stack_height = GetTileHeight(GetTopTileAt(pos + kNeighbourOffsets[ClockwiseDirection(dir)]));
-    int ccw_stack_height = GetTileHeight(GetTopTileAt(pos + kNeighbourOffsets[CounterClockwiseDirection(dir)]));
+    int from_stack_height = GetStackHeight(GetTopTileAt(pos));
+    int to_stack_height = 1 + GetStackHeight(GetTopTileAt(pos + kNeighbourOffsets[dir]));
+    int cw_stack_height = GetStackHeight(GetTopTileAt(pos + kNeighbourOffsets[ClockwiseDirection(dir)]));
+    int ccw_stack_height = GetStackHeight(GetTopTileAt(pos + kNeighbourOffsets[CounterClockwiseDirection(dir)]));
 
     // take the max of "from" and "to", and check for a gate at that level
     int compare_height = std::max(from_stack_height, to_stack_height);
@@ -581,21 +585,18 @@ class HiveBoard {
            ccw_stack_height >= compare_height;
   }
 
-  bool IsCovered(HiveTile tile) const {
-    return std::find_if(covered_tiles_.begin(), covered_tiles_.end(),
-      [tile](const std::pair<HiveTile,int>& pair) {
-        return pair.first == tile;
-      }) != covered_tiles_.end();
-  }
-  bool IsInBounds(size_t pos) const { return pos < kNumCells; }
-  bool IsInPlay(HiveTile tile) const {
-    return std::find(played_tiles_.begin(), played_tiles_.end(), tile) != played_tiles_.end();
-  }
-  bool IsPinned(HiveTile tile) const { return IsPinned(GetPositionOf(tile)) && GetTileHeight(tile) <= 1; }
-  bool IsPinned(size_t pos) const { return pinned_.test(pos); }
-  bool IsSurrounded(size_t pos) const {
-    return (kNeighbourMasks[pos] & occupied_) == kNeighbourMasks[pos];
-  }
+  // bool IsCovered(HiveTile tile) const {
+  //   return std::find_if(covered_tiles_.begin(), covered_tiles_.end(),
+  //     [tile](const std::pair<HiveTile,int>& pair) {
+  //       return pair.first == tile;
+  //     }) != covered_tiles_.end();
+  // }
+  // bool IsInPlay(HiveTile tile) const {
+  //   return std::find(played_tiles_.begin(), played_tiles_.end(), tile) != played_tiles_.end();
+  // }
+  // bool IsPinned(HiveTile tile) const { return IsPinned(GetPositionOf(tile)) && GetTileHeight(tile) <= 1; }
+  // bool IsPinned(size_t pos) const { return pinned_.test(pos); }
+  bool IsSurrounded(size_t pos) const { return adjacency_grid_[pos] == 0x3F; }
 
   bool WinConditionMet(Player player) const {
     HiveTile other_queen = HiveTile::GetTileFrom(OtherColour(PlayerToColour(player)), BugType::kQueen);
@@ -605,7 +606,10 @@ class HiveBoard {
 
   std::string PrintBoard() const { return occupied_.to_string(); }
 
-  void Pass() const {}
+  void Pass() {
+    last_moved_ = HiveTile::kNoneTile;
+    last_moved_from_ = -1;
+  }
 
   HexBitboard32x32 PlaceablePositions(Player to_play) const;
 
@@ -617,44 +621,56 @@ class HiveBoard {
   // https://en.wikipedia.org/wiki/Biconnected_component
   // https://cp-algorithms.com/graph/cutpoints.html
   void UpdateArticulationPoints();
-  void DFSArticulation(HiveTile tile, size_t parent_pos, bool is_root,
-    std::bitset<HiveTile::kNumTiles>& visited, int visit_order,
+  void DFSArticulation(HiveTile tile, HiveTile parent,
+    std::bitset<HiveTile::kNumTiles>& visited, int& visit_order,
     std::array<int, HiveTile::kNumTiles>& entry_point,
     std::array<int, HiveTile::kNumTiles>& low_point);
 
-  HexBitboard32x32 GeneratePositionsFor(HiveTile tile, 
-                                        BugType acting_type,
-                                        Colour to_move) const;
-
   void GenerateMove(std::bitset<kNumDistinctActions>& out, HiveTile from_tile, size_t to_pos) const;
   void GeneratePillbugSpecialMoves(std::bitset<kNumDistinctActions>& out, size_t pillbug_pos) const;
+  void GenerateFirstTurnPlacements(std::bitset<kNumDistinctActions>& out) const;
+  void GenerateSecondTurnPlacements(std::bitset<kNumDistinctActions>& out,
+                                    HiveTile white_first_tile) const;
 
   // Checks and returns the next top-most bug at position pos, or kNoneTile
   void OnTileUncovered(HiveTile tile);
   bool RecenterBoard();
+
+  // adjacency bitmask with 1s where there is an adjacent tile to the NE/E/SE...
+  uint8_t CalculateAdjacency(size_t pos) const {
+    uint8_t shape = 0;
+    for (int dir = 0; dir < Direction::kNumCardinalDirections; ++dir) {
+      shape |= (occupied_.test(pos + kNeighbourOffsets[dir])) << dir;
+    }
+
+    return shape;
+  }
 
   std::vector<size_t> SlidingAdjacentNeighbours(size_t start_pos) const;
 
   HexBitboard32x32 ValidWalkOnePositions(HiveTile tile) const;
   HexBitboard32x32 ValidSpiderPositions(HiveTile tile) const;
   HexBitboard32x32 ValidAntPositions(HiveTile tile) const;
+  HexBitboard32x32 ValidAntPositionsBFS(HiveTile tile) const;
   HexBitboard32x32 ValidGrasshopperPositions(HiveTile tile) const;
+  HexBitboard32x32 ValidGrasshopperPositionsAlt(HiveTile tile) const;
   HexBitboard32x32 ValidClimbPositions(HiveTile tile) const;
   HexBitboard32x32 ValidLadybugPositions(HiveTile tile) const;
 
   // Bitboards are used for things accessed frequently in the hot-path
   HexBitboard32x32 occupied_;
-  HexBitboard32x32 pinned_;
   HexBitboard32x32 player_positions_[2];
 
   // mail-box approach for queries that aren't as frequently called
   std::array<HiveTile, kNumCells> tile_grid_;
+  std::array<uint8_t, HiveTile::kNumTiles> tile_flags_{};
+  mutable std::array<uint8_t, kNumCells> adjacency_grid_{};
   std::array<size_t, HiveTile::kNumTiles> tile_positions_;
 
   // the current height of a given tile within its stack 
   // (0 = not played, 1 = first level, 2 = second level and implicitly on top of at
   // least one other tile)
-  std::array<size_t, HiveTile::kNumTiles + 1> tile_stack_heights_{};
+  // std::array<uint8_t, HiveTile::kNumTiles + 1> tile_stack_heights_{};
 
   std::array<std::pair</*me*/ HiveTile, /*above me*/ HiveTile>, 7> covered_tiles_;
   std::vector<HiveTile> played_tiles_;
